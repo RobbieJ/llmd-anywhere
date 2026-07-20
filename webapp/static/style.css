@@ -252,6 +252,17 @@ svg#topo { display: block; width: 100%; height: auto; margin-bottom: 0.4rem; }
 .meter .track { position: absolute; left: 0; top: 0; height: 10px; background: var(--rh-surface); border-radius: 4px; overflow: hidden; }
 .meter .fill { height: 100%; background: var(--series); border-radius: 4px; transition: width 0.4s; min-width: 0; }
 
+/* per-worker KV payoff: cached / restored / recomputed token share */
+.payoff .ptrack { display: flex; height: 10px; border-radius: 4px; overflow: hidden; background: var(--rh-surface); }
+.payoff .seg { height: 100%; transition: width 0.4s; }
+.payoff .seg-cached { background: var(--series); }
+.payoff .seg-restored { background: var(--series); opacity: 0.55; }
+.payoff .seg-computed { background: transparent; }
+.payoff .label b { transition: text-shadow 0.5s; }
+.payoff .label b.bump { text-shadow: 0 0 12px rgba(255,255,255,0.45); }
+.payoff-recent { font-size: 0.72rem; color: var(--rh-text-sub); margin-top: 3px; min-height: 1em; }
+.payoff-recent:empty { display: none; }
+
 .spark-wrap { margin-top: 0.9rem; position: relative; }
 .spark-wrap .label { font-size: 0.8rem; color: var(--rh-text-sub); margin-bottom: 2px; display: flex; justify-content: space-between; }
 .spark-wrap .label b { color: var(--rh-text); font-family: var(--rh-font-mono); font-size: 0.78rem; }

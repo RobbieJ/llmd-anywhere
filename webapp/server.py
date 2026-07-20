@@ -327,12 +327,15 @@ async def get_decisions():
 
 
 def _record(kind: str, tag: str, served_by: str | None, latency_ms: float, ok: bool,
-            ttft_ms: float | None = None, signals: dict | None = None):
+            ttft_ms: float | None = None, signals: dict | None = None,
+            prompt_tokens: int | None = None):
     global _rr_seq
     # counterfactual: the worker a blind round-robin balancer would have used
+    # (fall back to the caller's signals so MOCK mode gets a counterfactual too)
     rr_pick = None
-    if kind in ("chat", "loadgen") and last_signals:
-        names = list(last_signals.keys())
+    pool = last_signals or signals or {}
+    if kind in ("chat", "loadgen") and pool:
+        names = list(pool.keys())
         rr_pick = names[_rr_seq % len(names)]
         _rr_seq += 1
     decisions.append({
@@ -345,6 +348,8 @@ def _record(kind: str, tag: str, served_by: str | None, latency_ms: float, ok: b
         "latency_ms": round(latency_ms, 1),
         "ttft_ms": round(ttft_ms, 1) if ttft_ms is not None else None,
         "ok": ok,
+        # prompt size the worker reported (usage.prompt_tokens) — None if unknown
+        "prompt_tokens": prompt_tokens,
         # what the EPP scored on, as of the last dashboard scrape (~1.5s old)
         "signals": signals if signals is not None else {k: dict(v) for k, v in last_signals.items()},
     })
@@ -392,12 +397,16 @@ async def chat(req: Request):
         "max_tokens": body.get("max_tokens", 2048),
         "temperature": body.get("temperature", 0.7),
         "stream": True,
+        # ask for a final usage chunk so the routing-dividend estimate can
+        # price this conversation's prompt (vLLM supports include_usage)
+        "stream_options": {"include_usage": True},
     }
 
     async def gen():
         start = time.time()
         ttft = None
         served = None
+        prompt_toks = None
         try:
             async with http_client.stream(
                 "POST", f"{GATEWAY_URL}/v1/chat/completions", json=payload
@@ -409,11 +418,19 @@ async def chat(req: Request):
                         continue
                     if ttft is None:
                         ttft = (time.time() - start) * 1000
+                    if '"usage"' in line and line.startswith("data:"):
+                        try:
+                            usage = json.loads(line[5:]).get("usage") or {}
+                            prompt_toks = usage.get("prompt_tokens") or prompt_toks
+                        except Exception:
+                            pass
                     yield line + "\n\n"
-            _record("chat", _chat_tag(payload), served, (time.time() - start) * 1000, True, ttft)
+            _record("chat", _chat_tag(payload), served, (time.time() - start) * 1000, True, ttft,
+                    prompt_tokens=prompt_toks)
             yield "event: done\ndata: {}\n\n"
         except Exception as e:
-            _record("chat", _chat_tag(payload), served, (time.time() - start) * 1000, False, ttft)
+            _record("chat", _chat_tag(payload), served, (time.time() - start) * 1000, False, ttft,
+                    prompt_tokens=prompt_toks)
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -466,7 +483,12 @@ async def _one_completion(prompt: str, tag: str, max_tokens: int) -> None:
     try:
         r = await http_client.post(f"{GATEWAY_URL}/v1/chat/completions", json=payload)
         served = r.headers.get(ROUTING_HEADER)
-        _record("loadgen", tag, served, (time.time() - start) * 1000, r.status_code == 200)
+        try:
+            prompt_toks = (r.json().get("usage") or {}).get("prompt_tokens")
+        except Exception:
+            prompt_toks = None
+        _record("loadgen", tag, served, (time.time() - start) * 1000, r.status_code == 200,
+                prompt_tokens=prompt_toks)
     except Exception:
         _record("loadgen", tag, None, (time.time() - start) * 1000, False)
 

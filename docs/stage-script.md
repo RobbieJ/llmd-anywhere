@@ -41,7 +41,13 @@ Press **Send 12 shared-prefix prompts**.
 > request to the same place."
 
 Watch: all dots go to one worker; the ribbon runs solid in one color; the
-**tokens never recomputed** and **dollar** counters climb.
+**tokens never recomputed** and **dollar** counters climb — and on the winning
+machine's card, the **work never redone** bar ticks up with a
+"▲ reused in the last minute" line.
+
+> "Each machine also keeps its own score — this bar is that machine's lifetime
+> split of prompt work served from cache versus recomputed, priced the same
+> way. The pool counter up top is just these bars added together."
 
 > "That counter is prompt work we never redid — priced at what commercial APIs
 > charge for exactly this: cached input tokens are ~10× cheaper than fresh

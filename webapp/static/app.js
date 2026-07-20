@@ -9,6 +9,8 @@ const SPARK_POINTS = 60;
 const seriesColor = new Map(); // endpoint name -> color, fixed on first sight
 const history = new Map();     // endpoint name -> [{t, rate}]
 const lastTokens = new Map();  // endpoint name -> {t, total}
+const payoffWindow = new Map(); // endpoint name -> [{t, reused}], 60s window
+const lastReused = new Map();   // endpoint name -> reused total (bump detection)
 
 function colorFor(name) {
   if (!seriesColor.has(name)) {
@@ -103,6 +105,24 @@ const INFO = {
     machine's own <span class="term" data-term="vllm">vLLM</span> metrics.</p>
     <p>The memory bar's <i>length</i> is that machine's share of the pool's total
     <span class="term" data-term="kv">KV cache</span> capacity — some tanks really are ~5× bigger.</p>`,
+  workersavings: `<h4>Work this machine never redid</h4>
+    <p>Of all the prompt text this machine has ever been asked to read, the coloured share was
+    already sitting in its <span class="term" data-term="kv">KV cache</span> — served as a lookup
+    instead of recomputed. The grey share was fresh work. A paler segment appears when tokens came
+    back from the offload buffer rather than the fast tier (Beat 4).</p>
+    <p>The dollar figure prices those reused tokens at the commercial-API gap for
+    <span class="term" data-term="cachedprice">cached input</span> ($3.00 vs $0.30 per million).
+    Every machine's bar adds up to the pool counter above — same numbers, split per machine. These
+    are the worker's own lifetime counters (<code>prompt_tokens_by_source</code>), not this page's
+    bookkeeping.</p>`,
+  routingvalue: `<h4>What routing itself is worth</h4>
+    <p>For every request the dashboard also asks: which machine would a blind
+    <span class="term" data-term="roundrobin">round-robin</span> balancer have picked? When the
+    scheduler chose a machine that already remembered the prompt's beginning and round-robin's
+    pick did not, that request's reused work was preserved by routing — not luck.</p>
+    <p>The estimate multiplies each such request's prompt size (reported by the worker) by the
+    extra share the chosen machine had cached, priced at the cached-token gap. It is labelled an
+    estimate because the counterfactual machine never actually ran the request.</p>`,
   scheduling: `<h4>Scheduling</h4>
     <p>Every request is scored against each machine's live stats — no blind turn-taking
     (<span class="term" data-term="roundrobin">round-robin</span>). Watch the dots: each one is a real
@@ -222,6 +242,15 @@ function renderInstances(state) {
           <div class="label"><span><span class="term" data-term="kv">short-term memory used</span><span data-f="kv-cap"></span></span><b class="num" data-f="kv-label">–</b></div>
           <div class="guide"><div class="track"><div class="fill" data-f="kv" style="width:0%"></div></div></div>
         </div>
+        <div class="meter payoff" data-f="payoff-wrap" style="display:none">
+          <div class="label"><span>work never redone<button class="info-btn" data-info="workersavings">i</button></span><b class="num" data-f="payoff-label">–</b></div>
+          <div class="ptrack">
+            <div class="seg seg-cached" data-f="payoff-cached"></div>
+            <div class="seg seg-restored" data-f="payoff-restored"></div>
+            <div class="seg seg-computed" data-f="payoff-computed"></div>
+          </div>
+          <div class="payoff-recent num" data-f="payoff-recent"></div>
+        </div>
         <div class="spark-wrap">
           <div class="label"><span>writing speed</span><b class="num" data-f="rate">– tok/s</b></div>
           <svg class="spark" data-f="spark" preserveAspectRatio="none"></svg>
@@ -271,6 +300,37 @@ function renderInstances(state) {
     history.set(ep.name, h);
     card.querySelector('[data-f=rate]').textContent = rate == null ? '– tok/s' : fmt(rate, 1) + ' tok/s';
     drawSpark(card.querySelector('[data-f=spark]'), h, color, ep.name);
+
+    // per-worker KV payoff: this machine's prompt tokens served from cache
+    // (its own vllm:prompt_tokens_by_source counters) vs recomputed fresh
+    const pw = card.querySelector('[data-f=payoff-wrap]');
+    const cached = m.prompt_cached, restored = m.prompt_restored || 0, computed = m.prompt_computed || 0;
+    const ptotal = cached != null ? cached + restored + computed : 0;
+    pw.style.display = ptotal > 0 ? '' : 'none';
+    if (ptotal > 0) {
+      const reused = cached + restored;
+      card.querySelector('[data-f=payoff-cached]').style.width = (100 * cached / ptotal) + '%';
+      card.querySelector('[data-f=payoff-restored]').style.width = (100 * restored / ptotal) + '%';
+      card.querySelector('[data-f=payoff-computed]').style.width = (100 * computed / ptotal) + '%';
+      const dollars = reused * (PRICE_FRESH_PER_M - PRICE_CACHED_PER_M) / 1e6;
+      const labelEl = card.querySelector('[data-f=payoff-label]');
+      labelEl.textContent = `${Math.round(100 * reused / ptotal)}% · ${fmtDollars(dollars)} saved`;
+      const prevReused = lastReused.get(ep.name);
+      if (prevReused != null && reused > prevReused) {
+        labelEl.classList.add('bump');
+        setTimeout(() => labelEl.classList.remove('bump'), 700);
+      }
+      lastReused.set(ep.name, reused);
+      // recent window: reused tokens over the last 60s (counter-reset safe)
+      const win = payoffWindow.get(ep.name) || [];
+      if (win.length && reused < win[win.length - 1].reused) win.length = 0;
+      win.push({ t: now, reused });
+      while (win.length && now - win[0].t > 60) win.shift();
+      payoffWindow.set(ep.name, win);
+      const recent = win.length ? Math.max(0, reused - win[0].reused) : 0;
+      card.querySelector('[data-f=payoff-recent]').textContent =
+        recent > 0 ? `▲ ${fmtTokens(recent)} reused in the last minute` : '';
+    }
   }
 }
 
@@ -704,7 +764,7 @@ function renderInsights(decisions) {
   const strip = document.getElementById('insight-strip');
   const rows = decisions.filter(d => d.ok && (d.kind === 'loadgen' || d.kind === 'chat')).slice(-60);
   const warm = [], cold = [];
-  let avoided = 0, comparable = 0;
+  let avoided = 0, comparable = 0, preserved = 0;
   for (const d of rows) {
     const hit = chosenHit(d);
     if (hit == null) continue;
@@ -712,7 +772,11 @@ function renderInsights(decisions) {
     if (d.rr_pick && d.signals?.[d.rr_pick]) {
       comparable++;
       const rrHit = d.signals[d.rr_pick].prefix_hit_pct ?? 0;
-      if (hit >= 50 && rrHit < 50) avoided++;
+      if (hit >= 50 && rrHit < 50) {
+        avoided++;
+        // conservative: only the chosen machine's *extra* cached share counts
+        if (d.prompt_tokens) preserved += d.prompt_tokens * Math.max(0, hit - rrHit) / 100;
+      }
     }
   }
   const parts = [];
@@ -722,8 +786,14 @@ function renderInsights(decisions) {
       `${(cMed / wMed).toFixed(1)}× faster <span class="term" data-term="prefixhit">reusing work</span>`);
   }
   if (comparable >= 6 && avoided > 0) {
-    parts.push(`<b>${avoided}</b> of the last ${comparable} requests would have missed the warm cache under ` +
-      `<span class="term" data-term="roundrobin">round-robin</span>`);
+    let s = `<b>${avoided}</b> of the last ${comparable} requests would have missed the warm cache under ` +
+      `<span class="term" data-term="roundrobin">round-robin</span>`;
+    if (preserved > 0) {
+      const pd = preserved * (PRICE_FRESH_PER_M - PRICE_CACHED_PER_M) / 1e6;
+      s += ` — ~<b>${fmtTokens(Math.round(preserved))}</b> reused tokens (≈${fmtDollars(pd)}) ` +
+        `preserved by routing <i>(est.)</i><button class="info-btn" data-info="routingvalue">i</button>`;
+    }
+    parts.push(s);
   }
   strip.innerHTML = parts.join('<span style="opacity:0.4">·</span>');
 }

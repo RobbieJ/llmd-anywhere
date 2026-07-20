@@ -25,13 +25,20 @@ WORKERS = [
     },
 ]
 
-# mutable per-worker counters, random-walked as fake load flows through
+# mutable per-worker counters, random-walked as fake load flows through.
+# Asymmetric seeds: the M3 Max "holds" the shared prefix (warm, high reuse);
+# the GB10 is colder but shows a restored-from-offload slice.
+_SEEDS = {
+    "vllm-10-8001": {"prefix_hits": 8.0, "prefix_queries": 60.0, "prompt_cached": 5000.0,
+                     "prompt_restored": 2000.0, "prompt_computed": 18000.0},
+    "vllm-20-8002": {"prefix_hits": 40.0, "prefix_queries": 60.0, "prompt_cached": 26000.0,
+                     "prompt_restored": 0.0, "prompt_computed": 12000.0},
+}
 _stats = {
     w["name"]: {
         "running": 0, "waiting": 0, "gen_tokens": 0.0,
-        "prefix_hits": 40.0, "prefix_queries": 60.0,
-        "prompt_cached": 9000.0, "prompt_restored": 0.0, "prompt_computed": 2500.0,
         "attempts": random.randint(20, 40),
+        **_SEEDS[w["name"]],
     }
     for w in WORKERS
 }
@@ -135,7 +142,8 @@ async def _one(worker: dict, tag: str, kind: str, record) -> None:
         s["prompt_computed"] += random.randint(30, 90)
         _epp_index_size += 1
     record(kind, tag, f'{worker["address"]}:{worker["port"]}',
-           (time.time() - start) * 1000, True, signals=_signals())
+           (time.time() - start) * 1000, True, signals=_signals(),
+           prompt_tokens=random.randint(400, 440) if shared else random.randint(25, 45))
 
 
 async def loadgen(n: int, mode: str, record) -> None:
@@ -155,7 +163,7 @@ async def loadgen(n: int, mode: str, record) -> None:
                 s["attempts"] += 1
                 record("offload", f"doc {i + 1} ({label})", served,
                        random.uniform(300, 900) * (3 if phase == 1 else 1), True,
-                       signals=_signals())
+                       signals=_signals(), prompt_tokens=5000)
         return
     tasks = []
     for i in range(n):
@@ -187,6 +195,8 @@ async def chat_stream(tag: str, record):
     s = _stats[worker["name"]]
     s["gen_tokens"] += len(_REPLY.split())
     s["attempts"] += 1
+    s["prefix_queries"] += 1
+    s["prompt_computed"] += random.randint(60, 120)
     record("chat", tag, served, (time.time() - start) * 1000, True,
-           ttft_ms=80.0, signals=_signals())
+           ttft_ms=80.0, signals=_signals(), prompt_tokens=random.randint(80, 120))
     yield "event: done\ndata: {}\n\n"

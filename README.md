@@ -8,9 +8,11 @@ single MacBook Pro.
 
 A Red Hat-branded live dashboard visualizes every scheduling decision: an
 animated request-flow topology, per-worker cards showing the real underlying
-model and KV-cache/queue/throughput meters, prefix-cache savings counters
-(tokens *and* dollars), click-to-expand "why did the scheduler pick that
-worker?" score bars, and a chat with **conversational memory** — watch a
+model, KV-cache/queue/throughput meters and a **"work never redone" bar**
+(each machine's own cached-vs-recomputed token split, in tokens *and*
+dollars), pool-wide prefix-cache savings counters, click-to-expand "why did
+the scheduler pick that worker?" score bars, and a chat with
+**conversational memory** — watch a
 conversation pin itself to the worker whose KV cache holds its history, then
 clear the memory and watch the pin release.
 
@@ -124,8 +126,9 @@ See [docs/stage-script.md](docs/stage-script.md) for the full talk track.
 
 The routing panel also shows live **warm-vs-cold latency medians** and a
 **round-robin counterfactual** ("N of the last M requests would have missed the
-warm cache under round-robin"), and pressing **`c`** toggles a presenter
-caption bar that narrates the latest event for the room.
+warm cache under round-robin — ~X reused tokens preserved by routing"), and
+pressing **`c`** toggles a presenter caption bar that narrates the latest
+event for the room.
 
 ## How it works
 
