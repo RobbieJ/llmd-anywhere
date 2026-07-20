@@ -1,0 +1,18 @@
+# runtime state
+.run/
+*.pid
+*.log
+nohup.out
+
+# your pool (machine-specific) + the file generated from it
+config/pool.txt
+config/endpoints.yaml
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# macos
+.DS_Store
+.claude/

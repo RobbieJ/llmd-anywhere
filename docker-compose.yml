@@ -1,0 +1,33 @@
+# llm-d routing plane — runs on the hub machine; vLLM workers can be anywhere
+# the containers can reach (same Mac, other Macs, any CUDA box on the LAN).
+# Both images are multi-arch (amd64 + arm64), so they run natively on Apple Silicon.
+services:
+  epp:
+    image: ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0
+    container_name: llmd-epp
+    command:
+      - --config-file=/etc/llmd/epp-config.yaml
+      - --pool-name=llmd-local
+      - --grpc-port=9002
+      - --grpc-health-port=9003
+      - --metrics-port=9090
+      - --secure-serving=false
+      - --metrics-endpoint-auth=false
+      - --v=2
+    volumes:
+      - ./config:/etc/llmd:ro
+    ports:
+      - "9090:9090"   # EPP metrics (scraped by the demo webapp)
+    restart: unless-stopped
+
+  envoy:
+    image: envoyproxy/envoy:distroless-v1.33.2
+    container_name: llmd-envoy
+    command: ["-c", "/etc/llmd/envoy.yaml"]
+    volumes:
+      - ./config:/etc/llmd:ro
+    ports:
+      - "8080:8080"   # the llm-d gateway — OpenAI-compatible entrypoint
+    depends_on:
+      - epp
+    restart: unless-stopped

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>llm-d · no Kubernetes</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <div class="masthead">
+      <header>
+        <span class="rh-tag">llm-d</span>
+        <h1>without Kubernetes</h1>
+        <button class="info-btn" data-info="overview" title="what is this?">i</button>
+        <div class="pills">
+          <span class="pill" id="pill-gateway"><span class="dot"></span>gateway</span>
+          <span class="pill" id="pill-epp"><span class="dot"></span>endpoint picker</span>
+        </div>
+      </header>
+      <p class="subtitle">Very different machines, one AI model, one address — and the cluster is a text file.
+        Serving <span class="mono" id="model-name">…</span></p>
+    </div>
+
+    <div class="rh-section-label">The machines<button class="info-btn" data-info="machines">i</button></div>
+    <div class="instances" id="instances"></div>
+
+    <div class="rh-section-label">Scheduling<button class="info-btn" data-info="scheduling">i</button></div>
+    <svg id="topo" viewBox="0 0 1200 250" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="sched-caption">
+      <span class="saved-stat"><span class="v num" id="tokens-saved">–</span>
+        <span class="k">prompt tokens never recomputed<br><span id="tokens-saved-pct"></span></span></span>
+      <span class="saved-stat"><span class="v num" id="cost-saved">–</span>
+        <span class="k">prompt spend avoided · bill cut <span class="num" id="bill-cut">–</span><button class="info-btn" data-info="savings">i</button></span></span>
+    </div>
+
+    <div class="traffic">
+      <div class="traffic-left">
+        <div class="panel">
+          <h3>Demo script</h3>
+          <div class="beat">
+            <div class="beat-label"><span class="no">Beat 1</span> · Spread<button class="info-btn" data-info="beat1">i</button></div>
+            <button class="rh-button" id="btn-unique">Send 12 unique prompts</button>
+            <p class="beat-caption" id="cap-unique"></p>
+          </div>
+          <div class="beat">
+            <div class="beat-label"><span class="no">Beat 2</span> · Converge<button class="info-btn" data-info="beat2">i</button></div>
+            <button class="rh-button secondary" id="btn-shared">Send 12 shared-prefix prompts</button>
+            <p class="beat-caption" id="cap-shared"></p>
+          </div>
+          <div class="beat">
+            <div class="beat-label"><span class="no">Beat 3</span> · Reshape the pool<button class="info-btn" data-info="beat3">i</button></div>
+            <span class="cmd">ENDPOINTS="…" scripts/mac/gen-endpoints.sh</span>
+          </div>
+          <div class="beat">
+            <div class="beat-label"><span class="no">Beat 4</span> · Overflow<button class="info-btn" data-info="beat4">i</button></div>
+            <button class="rh-button secondary" id="btn-offload" disabled>Fill, evict &amp; restore</button>
+            <p class="beat-caption" id="cap-offload"></p>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>The cluster is a file<button class="info-btn" data-info="file">i</button></h3>
+          <div class="pool-meta">
+            <span><span class="v num" id="pool-ready">–</span> ready</span>
+            <span id="pool-age">–</span>
+          </div>
+          <pre class="pool-file mono" id="pool-file">…</pre>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Routing decisions<button class="info-btn" data-info="decisions">i</button></h3>
+        <div class="scoreboard" id="scoreboard"></div>
+        <div class="insight-strip num" id="insight-strip"></div>
+        <div class="ribbon-wrap">
+          <div class="ribbon" id="ribbon"></div>
+          <div class="ribbon-label">one tick per request, oldest → newest</div>
+        </div>
+        <table class="feed">
+          <thead><tr><th></th><th>time</th><th>request</th><th>served by</th><th>latency</th></tr></thead>
+          <tbody id="feed"></tbody>
+        </table>
+        <div class="feed-empty" id="feed-empty">No traffic yet — run a demo beat or use the chat below.</div>
+      </div>
+    </div>
+
+    <div class="rh-section-label">Chat through the gateway<button class="info-btn" data-info="chat">i</button></div>
+    <div class="panel chat-grid">
+      <div class="chat-meta">
+        <span id="chat-mem">memory: empty — first message starts a conversation</span>
+        <button class="rh-button secondary chat-clear" id="chat-clear" disabled>Clear memory</button>
+      </div>
+      <div class="chat-log" id="chat-log">
+        <div class="msg"><div class="who">system</div>
+        <div class="body">The badge shows which machine wrote each reply. The conversation remembers earlier turns — watch it pin to one machine as the history grows.</div></div>
+      </div>
+      <div class="chat-row">
+        <input id="chat-input" placeholder="Ask something…" autocomplete="off">
+        <button class="rh-button" id="chat-send">Send</button>
+      </div>
+    </div>
+
+    <details class="panel glossary">
+      <summary>What do these terms mean?</summary>
+      <dl id="glossary-list"></dl>
+    </details>
+
+    <footer>
+      <span><b>llm-d</b> — CNCF Sandbox project, founded by Red Hat, Google Cloud, IBM Research, CoreWeave &amp; NVIDIA ·
+      <a href="https://llm-d.ai">llm-d.ai</a> · <a href="https://github.com/llm-d">github.com/llm-d</a> ·
+      based on <a href="https://medium.com/@ezrasilvera/no-kubernetes-no-problem-llm-d-now-runs-anywhere-8b56b43e714c">“No Kubernetes? No Problem”</a></span>
+      <span class="rh-footer-brand">Built on <b>Red Hat</b> AI technology</span>
+    </footer>
+  </div>
+
+  <div class="tooltip" id="tooltip"></div>
+  <div class="info-pop" id="info-pop"></div>
+  <div class="presenter-bar" id="presenter-bar"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

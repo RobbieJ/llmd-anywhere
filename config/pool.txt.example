@@ -1,0 +1,4 @@
+# Pool membership: ip:port|device description (one per line)
+# Copy to pool.txt — or let ./demo manage it.
+192.168.1.20:8001|Apple M3 Max · Metal
+192.168.1.30:8001|NVIDIA RTX 5090 · WSL2

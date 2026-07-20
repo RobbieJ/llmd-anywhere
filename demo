@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# llm-d without Kubernetes — one-command demo driver.
+#
+#   ./demo up                       hub: gateway + scheduler + dashboard + local worker(s)
+#   ./demo mock                     dashboard only, simulated pool — no Docker, no GPUs
+#   ./demo worker                   worker-only mode (run on each extra machine)
+#   ./demo pool add <ip:port> ["device name"]
+#   ./demo pool remove <ip:port>
+#   ./demo pool list
+#   ./demo status                   what's running, where
+#   ./demo down                     stop everything on this machine
+#   ./demo doctor                   preflight checks
+#
+# Knobs (env): SERVED_NAME (default llmd-demo) · WORKERS (local workers on
+# `up`, default 2) · MODEL (override auto RAM-based choice) · WEBAPP_PORT (7080)
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUN="$ROOT/.run"
+POOL_FILE="$ROOT/config/pool.txt"
+SERVED_NAME="${SERVED_NAME:-llmd-demo}"
+WORKERS="${WORKERS:-2}"
+WEBAPP_PORT="${WEBAPP_PORT:-7080}"
+BASE_PORT="${BASE_PORT:-8001}"
+
+say()  { printf '\033[1m>>> %s\033[0m\n' "$*"; }
+warn() { printf '\033[33m!!  %s\033[0m\n' "$*"; }
+die()  { printf '\033[31m!!! %s\033[0m\n' "$*" >&2; exit 1; }
+
+my_ip() {
+  ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null \
+    || hostname -I 2>/dev/null | awk 'NF {print $1}' || true
+}
+
+my_device() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    echo "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo Apple Silicon) · Metal"
+  elif command -v nvidia-smi >/dev/null 2>&1; then
+    echo "NVIDIA $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+  else
+    echo "vLLM worker"
+  fi
+}
+
+# --------------------------------------------------------------------- doctor
+cmd_doctor() {
+  local ok=0
+  say "doctor"
+  [[ "$(uname -m)" == "arm64" || "$(uname)" != "Darwin" ]] && echo "  ✓ architecture: $(uname -m)" \
+    || { warn "Intel Mac detected — vllm-metal needs Apple Silicon"; ok=1; }
+  command -v docker >/dev/null && echo "  ✓ docker" || { warn "docker not found (Docker Desktop or colima required on the hub)"; ok=1; }
+  command -v python3 >/dev/null && echo "  ✓ python3 ($(python3 -V 2>&1 | cut -d' ' -f2))" || { warn "python3 not found"; ok=1; }
+  local ip; ip=$(my_ip)
+  [[ -n "$ip" ]] && echo "  ✓ LAN address: $ip" \
+    || { warn "no LAN IPv4 on en0/en1 — the scheduler container reaches workers by LAN IP"; ok=1; }
+  if [[ "$(uname)" == "Darwin" ]]; then
+    local free; free=$(memory_pressure 2>/dev/null | awk -F': ' '/free percentage/{gsub(/%/,"",$2); print int($2)}')
+    local mem_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+    echo "  ✓ memory: ${mem_gb}GB total, ${free:-?}% free"
+    [[ "${free:-100}" -lt 35 ]] && warn "less than 35% memory free — close some apps before starting workers"
+  fi
+  for p in 8080 9090 "$WEBAPP_PORT"; do
+    if lsof -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then echo "  · port $p already in use (fine if it's this demo)"; fi
+  done
+  return $ok
+}
+
+# --------------------------------------------------------------------- worker
+start_local_workers() {
+  local n="$1" ip="$2"
+  # split a safe overall budget across local workers
+  local fraction
+  fraction=$(python3 -c "print(round(min(0.25, 0.25 / $n) if $n <= 1 else round(0.24 / $n, 2), 2))")
+  for i in $(seq 0 $((n - 1))); do
+    local port=$((BASE_PORT + i))
+    say "local worker $((i + 1))/$n on :$port (memory fraction $fraction)"
+    SERVED_NAME="$SERVED_NAME" PORT="$port" FRACTION="$fraction" ${MODEL:+MODEL="$MODEL"} \
+      "$ROOT/macvllm/start.sh"
+    pool_add_entry "$ip:$port" "$(my_device)"
+  done
+}
+
+cmd_worker() {
+  [[ "$(uname)" == "Darwin" ]] || die "worker mode currently drives vllm-metal (macOS). For NVIDIA boxes see scripts/ and join with: ./demo pool add"
+  [[ -x "${VLLM_METAL_VENV:-$HOME/.venv-vllm-metal}/bin/vllm" ]] || {
+    say "installing vllm-metal (one-time; builds vllm core — go get coffee)"
+    "$ROOT/macvllm/setup.sh"
+  }
+  local port="${PORT:-$BASE_PORT}"
+  SERVED_NAME="$SERVED_NAME" PORT="$port" FRACTION="${FRACTION:-0.25}" ${MODEL:+MODEL="$MODEL"} \
+    "$ROOT/macvllm/start.sh"
+}
+
+# ----------------------------------------------------------------------- pool
+pool_add_entry() {  # ip:port device — updates pool.txt idempotently, regenerates
+  local ep="$1" device="${2:-}"
+  mkdir -p "$(dirname "$POOL_FILE")"
+  touch "$POOL_FILE"
+  grep -v "^${ep}|" "$POOL_FILE" > "$POOL_FILE.tmp" 2>/dev/null || true
+  echo "${ep}|${device}" >> "$POOL_FILE.tmp"
+  mv "$POOL_FILE.tmp" "$POOL_FILE"
+  SERVED_NAME="$SERVED_NAME" "$ROOT/scripts/mac/gen-endpoints.sh"
+}
+
+cmd_pool() {
+  case "${1:-list}" in
+    add)    [[ -n "${2:-}" ]] || die "usage: ./demo pool add <ip:port> [\"device name\"]"
+            pool_add_entry "$2" "${3:-}" ;;
+    remove) [[ -n "${2:-}" ]] || die "usage: ./demo pool remove <ip:port>"
+            grep -v "^${2}|" "$POOL_FILE" > "$POOL_FILE.tmp" || true
+            mv "$POOL_FILE.tmp" "$POOL_FILE"
+            SERVED_NAME="$SERVED_NAME" "$ROOT/scripts/mac/gen-endpoints.sh" ;;
+    list)   say "pool members ($POOL_FILE):"
+            [[ -f "$POOL_FILE" ]] && sed 's/^/    /' "$POOL_FILE" || echo "    (empty)"
+            echo
+            say "live endpoints (config/endpoints.yaml):"
+            [[ -f "$ROOT/config/endpoints.yaml" ]] && grep -E 'name:|address:|device' "$ROOT/config/endpoints.yaml" | sed 's/^/    /' ;;
+    *)      die "usage: ./demo pool add|remove|list" ;;
+  esac
+}
+
+# ------------------------------------------------------------------ hub up/down
+start_webapp() {
+  mkdir -p "$RUN"
+  if [[ ! -x "$RUN/venv/bin/python" ]]; then
+    say "creating webapp venv"
+    python3 -m venv "$RUN/venv"
+    "$RUN/venv/bin/pip" -q install -r "$ROOT/webapp/requirements.txt"
+  fi
+  if [[ -f "$RUN/webapp.pid" ]] && kill -0 "$(cat "$RUN/webapp.pid")" 2>/dev/null; then
+    echo "    webapp already running (pid $(cat "$RUN/webapp.pid"))"
+  else
+    ( cd "$ROOT/webapp" && MODEL_NAME="$SERVED_NAME" WEBAPP_PORT="$WEBAPP_PORT" MOCK="${MOCK:-}" \
+        nohup "$RUN/venv/bin/python" server.py > "$RUN/webapp.log" 2>&1 & echo $! > "$RUN/webapp.pid" )
+  fi
+}
+
+cmd_mock() {
+  say "dashboard (simulated pool — no Docker, no GPUs)"
+  MOCK=1 start_webapp
+  echo
+  say "mock dashboard: http://localhost:$WEBAPP_PORT   (stop with ./demo down)"
+}
+
+cmd_up() {
+  cmd_doctor || true
+  local ip; ip=$(my_ip); [[ -n "$ip" ]] || die "no LAN IP — connect to a network first"
+
+  say "routing plane (Envoy gateway + llm-d endpoint picker, docker)"
+  ( cd "$ROOT" && docker compose up -d )
+
+  if [[ "$(uname)" == "Darwin" ]]; then
+    [[ -x "${VLLM_METAL_VENV:-$HOME/.venv-vllm-metal}/bin/vllm" ]] || {
+      say "installing vllm-metal (one-time; builds vllm core — this takes a while)"
+      "$ROOT/macvllm/setup.sh"
+    }
+    # local workers, unless the pool already has members (existing setup)
+    if [[ ! -s "$POOL_FILE" ]]; then
+      start_local_workers "$WORKERS" "$ip"
+    else
+      say "pool.txt already has members — not starting local workers (use ./demo worker to add one)"
+      SERVED_NAME="$SERVED_NAME" "$ROOT/scripts/mac/gen-endpoints.sh" || true
+    fi
+  else
+    # non-Mac hub: routing plane + dashboard here, workers join over the LAN
+    say "non-Mac hub — start workers on their machines (see scripts/), then: ./demo pool add <ip:port>"
+    [[ -s "$POOL_FILE" ]] && SERVED_NAME="$SERVED_NAME" "$ROOT/scripts/mac/gen-endpoints.sh" || true
+  fi
+
+  say "dashboard"
+  start_webapp
+
+  echo
+  say "up. Dashboard: http://$ip:$WEBAPP_PORT  (gateway: http://$ip:8080/v1)"
+  echo "    Add another machine: run './demo worker' there, then here:"
+  echo "      ./demo pool add <that-ip>:$BASE_PORT \"<device name>\""
+}
+
+cmd_down() {
+  say "stopping webapp"
+  [[ -f "$RUN/webapp.pid" ]] && kill "$(cat "$RUN/webapp.pid")" 2>/dev/null || true
+  rm -f "$RUN/webapp.pid"
+  say "stopping local workers"
+  "$ROOT/macvllm/stop.sh" 2>/dev/null || true
+  say "stopping routing plane"
+  ( cd "$ROOT" && docker compose down 2>/dev/null ) || true
+  say "down (pool.txt kept; endpoints.yaml will regenerate on next up)"
+}
+
+cmd_status() {
+  local ip; ip=$(my_ip)
+  say "routing plane"; ( cd "$ROOT" && docker compose ps --format 'table {{.Name}}\t{{.Status}}' 2>/dev/null ) | sed 's/^/    /'
+  say "webapp"; curl -sf -m 2 "http://127.0.0.1:$WEBAPP_PORT/" >/dev/null && echo "    up: http://$ip:$WEBAPP_PORT" || echo "    down"
+  cmd_pool list
+}
+
+# ----------------------------------------------------------------------- main
+case "${1:-}" in
+  up)     cmd_up ;;
+  mock)   cmd_mock ;;
+  down)   cmd_down ;;
+  worker) shift; cmd_worker "$@" ;;
+  pool)   shift; cmd_pool "$@" ;;
+  status) cmd_status ;;
+  doctor) cmd_doctor ;;
+  *)      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac
