@@ -177,23 +177,25 @@ async def _one(worker: dict, tag: str, kind: str, record) -> None:
     s["running"] += 1
     start = time.time()
     lo, hi = worker["latency"]
-    shared = tag.startswith("shared")
-    dur = random.uniform(lo, hi) * (0.5 if shared else 1.0)
+    # shared and RAG both reuse a long shared prefix → warm cache hits
+    reuse = tag.startswith(("shared", "RAG"))
+    big = tag.startswith("RAG")
+    dur = random.uniform(lo, hi) * (0.5 if reuse else 1.0)
     await asyncio.sleep(dur)
     s["running"] -= 1
     s["gen_tokens"] += random.randint(20, 60)
     s["prefix_queries"] += 1
     s["attempts"] += 1
-    if shared:
+    if reuse:
         s["prefix_hits"] += 1
-        s["prompt_cached"] += random.randint(280, 380)
+        s["prompt_cached"] += random.randint(900, 1300) if big else random.randint(280, 380)
         s["prompt_computed"] += random.randint(10, 40)
     else:
         s["prompt_computed"] += random.randint(30, 90)
         _epp_index_size += 1
     record(kind, tag, f'{worker["address"]}:{worker["port"]}',
            (time.time() - start) * 1000, True, signals=_signals(),
-           prompt_tokens=random.randint(400, 440) if shared else random.randint(25, 45))
+           prompt_tokens=random.randint(400, 440) if reuse else random.randint(25, 45))
 
 
 async def loadgen(n: int, mode: str, record) -> None:
@@ -215,12 +217,18 @@ async def loadgen(n: int, mode: str, record) -> None:
                        random.uniform(300, 900) * (3 if phase == 1 else 1), True,
                        signals=_signals(), prompt_tokens=5000)
         return
+    seq = mode in ("shared", "rag")
     tasks = []
     for i in range(n):
-        tag = f"shared-prefix #{i + 1}" if mode == "shared" else f"unique #{i + 1}"
-        worker = _pick(mode, i)
+        if mode == "rag":
+            tag = f"RAG q{i + 1}"
+        elif mode == "shared":
+            tag = f"shared-prefix #{i + 1}"
+        else:
+            tag = f"unique #{i + 1}"
+        worker = _pick("shared" if seq else mode, i)
         tasks.append(_one(worker, tag, "loadgen", record))
-    if mode == "shared":
+    if seq:
         for t in tasks:
             await t
     else:

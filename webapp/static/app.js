@@ -166,6 +166,13 @@ const INFO = {
     <span class="term" data-term="prefix">prefix</span>, like a system prompt). The scheduler sends
     them where that work is already remembered — expect them all to land on ONE machine, and the
     savings counter to climb.</p>`,
+  rag: `<h4>RAG workload</h4>
+    <p>The real shape of a retrieval app: one long document, then thirty different questions about
+    it. After the first question warms the <span class="term" data-term="kv">cache</span>, every
+    other question reuses it — so the reuse counter and the winning machine's payoff bar climb
+    steadily for the length of the run, not just a blip.</p>
+    <p>This is why prefix-cache-aware routing matters at scale: the more a context is reused, the
+    more routing to where it already lives is worth.</p>`,
   beat3: `<h4>Beat 3 · Reshape the pool</h4>
     <p>The pool is a text file — and you can edit it right here. Every machine card has a
     <b>⏻ drain</b> (take it out of rotation, reversibly) and <b>✕ remove</b>; the dashed tile adds
@@ -284,7 +291,10 @@ function renderInstances(state) {
           <div class="label"><span>writing speed</span><b class="num" data-f="rate">– tok/s</b></div>
           <svg class="spark" data-f="spark" preserveAspectRatio="none"></svg>
         </div>`;
-      root.appendChild(card);
+      // insert before the add-form tile (if open) so it stays last WITHOUT
+      // ever moving it — moving a node that holds a focused input blurs it
+      const addTile = document.getElementById('add-tile');
+      if (addTile) root.insertBefore(card, addTile); else root.appendChild(card);
     }
     card.dataset.address = ep.address;
     card.dataset.port = ep.port;
@@ -369,42 +379,6 @@ function renderInstances(state) {
         recent > 0 ? `▲ ${fmtTokens(recent)} reused in the last minute` : '';
     }
   }
-  ensureAddTile(root);
-}
-
-// The dashed "＋ add a machine" tile — the browser-side of Beat 3. Created once,
-// always kept as the last cell of the grid so adding a worker grows the grid.
-function ensureAddTile(root) {
-  let tile = document.getElementById('add-tile');
-  if (!tile) {
-    tile = document.createElement('div');
-    tile.className = 'card add-tile';
-    tile.id = 'add-tile';
-    tile.innerHTML = `
-      <button class="add-open" id="add-open">＋ add a machine<button class="info-btn" data-info="addworker">i</button></button>
-      <form class="add-form" id="add-form" hidden>
-        <label>address<input id="add-addr" inputmode="decimal" autocomplete="off" placeholder="192.168.1.20"></label>
-        <label>port<input id="add-port" type="number" min="1" max="65535" value="8001"></label>
-        <label>device
-          <select id="add-device">
-            <option>Apple Silicon · Metal</option>
-            <option>NVIDIA · CUDA</option>
-            <option>vLLM worker</option>
-            <option value="__custom">Custom…</option>
-          </select>
-        </label>
-        <input id="add-device-custom" hidden maxlength="40" placeholder="short label">
-        <div class="add-actions">
-          <button type="submit" class="rh-button" id="add-submit" disabled>Add to pool</button>
-          <button type="button" class="rh-button secondary" id="add-cancel">Cancel</button>
-        </div>
-        <p class="add-msg" id="add-msg"></p>
-      </form>`;
-    root.appendChild(tile);
-    wireAddTile(tile);
-  } else {
-    root.appendChild(tile);   // keep it last after new worker cards append
-  }
 }
 
 const validIPv4 = s => {
@@ -415,8 +389,47 @@ const validIPv4 = s => {
 // and a leading '#' (which would comment the line out). The server re-sanitizes.
 const cleanDevice = s => (s || '').replace(/[|\r\n]/g, ' ').replace(/^#+/, '').trim().slice(0, 40);
 
-function wireAddTile(tile) {
-  const openBtn = tile.querySelector('#add-open');
+function closeAddMachine() {
+  const t = document.getElementById('add-tile');
+  if (t) t.remove();
+}
+
+// Opened on demand from the "＋ add machine" button — no grid space is reserved
+// until asked for. The form appears as a tile in the machines grid, so adding a
+// worker literally grows the grid; the grid re-flows as machines come and go.
+function openAddMachine() {
+  if (document.getElementById('add-tile')) { document.getElementById('add-addr').focus(); return; }
+  const root = document.getElementById('instances');
+  const tile = document.createElement('div');
+  tile.className = 'card add-tile';
+  tile.id = 'add-tile';
+  tile.innerHTML = `
+    <form class="add-form" id="add-form">
+      <div class="add-head">Add a machine<button class="info-btn" data-info="addworker">i</button></div>
+      <label>address<input id="add-addr" inputmode="decimal" autocomplete="off" placeholder="192.168.1.20"></label>
+      <label>port<input id="add-port" type="number" min="1" max="65535" value="8001"></label>
+      <label>device
+        <select id="add-device">
+          <option value="">Auto-detect</option>
+          <option>Apple Silicon · Metal</option>
+          <option>NVIDIA · CUDA</option>
+          <option>vLLM worker</option>
+          <option value="__custom">Custom…</option>
+        </select>
+      </label>
+      <input id="add-device-custom" hidden maxlength="40" placeholder="short label">
+      <div class="add-actions">
+        <button type="submit" class="rh-button" id="add-submit" disabled>Add to pool</button>
+        <button type="button" class="rh-button secondary" id="add-cancel">Cancel</button>
+      </div>
+      <p class="add-msg" id="add-msg"></p>
+    </form>`;
+  root.appendChild(tile);
+  wireAddForm(tile);
+  tile.querySelector('#add-addr').focus();
+}
+
+function wireAddForm(tile) {
   const form = tile.querySelector('#add-form');
   const addr = tile.querySelector('#add-addr');
   const portEl = tile.querySelector('#add-port');
@@ -425,10 +438,7 @@ function wireAddTile(tile) {
   const submit = tile.querySelector('#add-submit');
   const msg = tile.querySelector('#add-msg');
 
-  const openForm = () => { form.hidden = false; openBtn.hidden = true; addr.focus(); };
-  const closeForm = () => { form.hidden = true; openBtn.hidden = false; form.reset(); deviceCustom.hidden = true; msg.textContent = ''; validate(); };
-  openBtn.addEventListener('click', (e) => { if (e.target.closest('.info-btn')) return; openForm(); });
-  tile.querySelector('#add-cancel').addEventListener('click', closeForm);
+  tile.querySelector('#add-cancel').addEventListener('click', closeAddMachine);
 
   const validate = () => {
     const okAddr = validIPv4(addr.value);
@@ -453,12 +463,14 @@ function wireAddTile(tile) {
     try {
       await poolMutate('add', { address, port, device });
       const live = lastEndpoints.some(ep => ep.address === address && String(ep.port) === port);
-      if (live) { closeForm(); }
+      if (live) { closeAddMachine(); }
       else { msg.textContent = 'added to the file — held out of the live pool until it answers'; }
     } catch (err) { msg.textContent = err.message; }
     validate();
   });
 }
+
+document.getElementById('add-machine').addEventListener('click', openAddMachine);
 
 // per-card drain / remove (delegated; two-step remove needs no modal)
 document.getElementById('instances').addEventListener('click', async (ev) => {
@@ -1039,30 +1051,32 @@ function renderDecisions(decisions, epp) {
 
 /* ---------- demo beats ---------- */
 
-const bursts = { unique: null, shared: null };  // mode -> {start, n, capEl, baseText}
+const bursts = { unique: null, shared: null, rag: null };  // mode -> {start, n, capEl, baseText}
 
-async function burst(mode, btn) {
+const TAG_PREFIX = { unique: 'unique', shared: 'shared-prefix', rag: 'RAG' };
+
+async function burst(mode, btn, n) {
+  n = n || 12;
   btn.disabled = true;
   const cap = document.getElementById(`cap-${mode}`);
-  bursts[mode] = { start: Date.now() / 1000, n: 12, capEl: cap, baseText: cap.dataset.base ?? cap.textContent };
+  bursts[mode] = { start: Date.now() / 1000, n, capEl: cap, baseText: cap.dataset.base ?? cap.textContent };
   cap.dataset.base = bursts[mode].baseText;
   cap.classList.remove('result');
-  cap.textContent = 'Routing 12 requests…';
+  cap.textContent = `Routing ${n} requests…`;
   try {
     await fetch('/api/loadgen', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ n: 12, mode }),
+      body: JSON.stringify({ n, mode }),
     });
   } finally {
-    setTimeout(() => { btn.disabled = false; }, 2500);
+    setTimeout(() => { btn.disabled = false; }, n > 20 ? 4000 : 2500);
   }
 }
 
 function updateBeatCaptions(decisions) {
   for (const [mode, b] of Object.entries(bursts)) {
     if (!b) continue;
-    const tagPrefix = mode === 'shared' ? 'shared-prefix' : 'unique';
-    const done = decisions.filter(d => d.kind === 'loadgen' && d.ts >= b.start && d.tag.startsWith(tagPrefix));
+    const done = decisions.filter(d => d.kind === 'loadgen' && d.ts >= b.start && d.tag.startsWith(TAG_PREFIX[mode]));
     if (done.length < b.n) {
       if (done.length) b.capEl.textContent = `Routing… ${done.length}/${b.n} answered`;
       continue;
@@ -1076,9 +1090,9 @@ function updateBeatCaptions(decisions) {
     const split = ranked.map(([n, c]) => `${c} → ${n}`).join(' · ');
     const topShare = ranked[0][1] / done.length;
     b.capEl.classList.add('result');
-    if (mode === 'shared') {
+    if (mode === 'shared' || mode === 'rag') {
       b.capEl.textContent = topShare >= 0.75
-        ? `Result: ${split} — that machine already remembered the shared text, so nothing was redone.`
+        ? `Result: ${split} — one machine held the shared text, so ${done.length - ranked[0][1] === 0 ? 'nothing' : 'almost nothing'} was recomputed.`
         : `Result: ${split} — reuse won until the line got long, then the scheduler spilled the rest over.`;
     } else {
       b.capEl.textContent = `Result: ${split} — spread so no machine builds a queue.`;
@@ -1087,8 +1101,9 @@ function updateBeatCaptions(decisions) {
   }
 }
 
-document.getElementById('btn-unique').onclick = (e) => burst('unique', e.target);
-document.getElementById('btn-shared').onclick = (e) => burst('shared', e.target);
+document.getElementById('btn-unique').onclick = (e) => burst('unique', e.target, 12);
+document.getElementById('btn-shared').onclick = (e) => burst('shared', e.target, 12);
+document.getElementById('btn-rag').onclick = (e) => burst('rag', e.target, 30);
 
 /* Beat 4 · Overflow — needs an offload-enabled worker in the pool */
 

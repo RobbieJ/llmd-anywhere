@@ -22,7 +22,26 @@
         Serving <span class="mono" id="model-name">…</span></p>
     </div>
 
-    <div class="rh-section-label">The machines<button class="info-btn" data-info="machines">i</button></div>
+    <div class="rh-section-label">Chat through the gateway<button class="info-btn" data-info="chat">i</button></div>
+    <div class="panel chat-grid">
+      <div class="chat-meta">
+        <span id="chat-mem">memory: empty — first message starts a conversation</span>
+        <button class="rh-button secondary chat-clear" id="chat-clear" disabled>Clear memory</button>
+      </div>
+      <div class="chat-log" id="chat-log">
+        <div class="msg"><div class="who">system</div>
+        <div class="body">Ask anything — the badge on each reply shows which machine the scheduler routed it to. The conversation remembers earlier turns, so watch it pin to one machine as the history grows.</div></div>
+      </div>
+      <div class="chat-row">
+        <input id="chat-input" placeholder="Ask something…" autocomplete="off">
+        <button class="rh-button" id="chat-send">Send</button>
+      </div>
+    </div>
+
+    <div class="section-head">
+      <div class="rh-section-label">The machines<button class="info-btn" data-info="machines">i</button></div>
+      <button class="rh-button secondary add-machine-btn" id="add-machine">＋ add machine</button>
+    </div>
     <div class="instances" id="instances"></div>
 
     <div class="rh-section-label">Scheduling<button class="info-btn" data-info="scheduling">i</button></div>
@@ -57,6 +76,11 @@
             <p class="beat-caption" id="cap-shared"></p>
           </div>
           <div class="beat">
+            <div class="beat-label"><span class="no">Bigger</span> · RAG workload<button class="info-btn" data-info="rag">i</button></div>
+            <button class="rh-button secondary" id="btn-rag">30 questions · one document</button>
+            <p class="beat-caption" id="cap-rag"></p>
+          </div>
+          <div class="beat">
             <div class="beat-label"><span class="no">Beat 3</span> · Reshape the pool<button class="info-btn" data-info="beat3">i</button></div>
             <p class="beat-caption">↑ On any machine card: <b>⏻ drain</b> or <b>✕ remove</b> — or <b>＋ add a machine</b>. Watch the topology and ready-count reshape live.</p>
           </div>
@@ -89,22 +113,6 @@
           <tbody id="feed"></tbody>
         </table>
         <div class="feed-empty" id="feed-empty">No traffic yet — run a demo beat or use the chat below.</div>
-      </div>
-    </div>
-
-    <div class="rh-section-label">Chat through the gateway<button class="info-btn" data-info="chat">i</button></div>
-    <div class="panel chat-grid">
-      <div class="chat-meta">
-        <span id="chat-mem">memory: empty — first message starts a conversation</span>
-        <button class="rh-button secondary chat-clear" id="chat-clear" disabled>Clear memory</button>
-      </div>
-      <div class="chat-log" id="chat-log">
-        <div class="msg"><div class="who">system</div>
-        <div class="body">The badge shows which machine wrote each reply. The conversation remembers earlier turns — watch it pin to one machine as the history grows.</div></div>
-      </div>
-      <div class="chat-row">
-        <input id="chat-input" placeholder="Ask something…" autocomplete="off">
-        <button class="rh-button" id="chat-send">Send</button>
       </div>
     </div>
 

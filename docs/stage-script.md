@@ -61,25 +61,36 @@ Click the newest decision row:
 
 ## Beat 3 — The cluster is a file (2 min)
 
-In the terminal:
+Do it from the dashboard itself — every machine card has a **⏻ drain** and a
+**✕ remove**, and **＋ add machine** (top-right of *The machines*) opens an
+inline form.
 
-```bash
-./demo pool remove <ip:port>       # drop a worker
-```
+Press **⏻ drain** on a worker:
 
 > "This is the part that normally needs a Kubernetes control plane. My cluster
-> state is a YAML file. The Endpoint Picker watches it."
+> state is a text file — and I'm editing it right here in the browser. The
+> Endpoint Picker watches the file."
 
-Watch the worker vanish from the topology and the ready-count drop. Then:
-
-```bash
-./demo pool add <ip:port> "<device>"
-```
+Watch the worker grey out, detach from the flow, and the ready-count drop; the
+"cluster is a file" panel flashes as the file changes. Press **⏻** again:
 
 > "…and it's back. No restarts, no operators, no CRDs. A text file."
 
-If you have a second machine handy, this is the moment to join it live
-(`./demo worker` there, `./demo pool add` here).
+Then **＋ add machine** — type a LAN address; the device is auto-detected from
+the worker (NVIDIA vs Apple Metal). A real heterogeneous join lands live: an
+NVIDIA DGX Spark next to the Apple Metal workers, one gateway, one pool.
+(The terminal path still works too: `./demo pool add <ip:port> "<device>"`.)
+
+## Bigger — a RAG workload (optional, 1 min)
+
+Press **30 questions · one document**: one long document, thirty different
+questions about it.
+
+> "This is the shape a retrieval app actually hits. The first question warms
+> the cache; every one after it is reused work — watch the reuse counter and
+> the winning machine's payoff bar climb steadily, for a solid run, not a
+> blip. The more a context is reused, the more routing to where it lives is
+> worth."
 
 ## Beat 4 — Overflow: the offload buffer (optional, 2 min)
 

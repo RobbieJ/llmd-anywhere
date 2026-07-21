@@ -569,14 +569,73 @@ async def _offload_beat(ep: dict, n_docs: int, doc_tokens: int) -> None:
                         (time.time() - start) * 1000, False)
 
 
+# ---- RAG marathon + saturation beats --------------------------------------
+# One long shared document (a realistic RAG context, ~1.2K tokens) that many
+# questions reference — the shape real apps hit prefix-cache affinity with.
+RAG_DOC = (
+    "ACME ROCKET COMPANY — FLIGHT OPERATIONS HANDBOOK (rev 12, unabridged)\n\n"
+    "Section 1 — Purpose and scope: this handbook governs all pre-flight, "
+    "flight, and post-flight operations for the Aurora and Borealis launch "
+    "vehicles. It supersedes all prior revisions and must be carried, in full, "
+    "by the flight director and every certified operator on console.\n"
+    "Section 2 — Roles: the flight director owns the go/no-go decision. The "
+    "propulsion officer owns cryogenic loading. The range safety officer owns "
+    "the flight-termination system and may abort unilaterally at any time.\n"
+    "Section 3 — Countdown: the terminal count begins at T-10 minutes. Holds "
+    "may be called by any console for a red parameter; the count resumes only "
+    "on the flight director's explicit poll of all stations.\n"
+    "Section 4 — Cryogenic propellant: liquid oxygen and methane are loaded "
+    "only with two certified technicians present. Loading pauses automatically "
+    "if tank pressure exceeds the yellow band in Appendix C.\n"
+    "Section 5 — Weather: launch is prohibited through cumulus cloud within "
+    "10 nautical miles, or when the field mill reads above the threshold in "
+    "Appendix D. The weather officer briefs the flight director at T-30.\n"
+    "Section 6 — Abort modes: pad abort returns to safe-and-secure. Ascent "
+    "aborts follow the mode-line table in Appendix E; each mode names a "
+    "downrange recovery zone and a maximum wind for parachute descent.\n"
+    "Section 7 — Anomalies: any in-flight anomaly is logged on form AR-11 "
+    "within 24 hours and reviewed by the anomaly board before the next flight.\n"
+    "Section 8 — Vendor relations: suppliers are referred to as 'qualified "
+    "suppliers' in all external communication; pricing questions go to "
+    "procurement, never to engineering.\n"
+    "Section 9 — Confidentiality: engine performance figures are disclosed "
+    "only in the ranges already published in the current press kit.\n"
+    "Section 10 — Post-flight: the recovery team safes residual propellant "
+    "before approach; the data team pulls telemetry within one hour and files "
+    "the quick-look report before crew debrief.\n\n"
+    "Answer strictly from the handbook above, in one or two sentences, and "
+    "cite the section number you relied on.\n\n"
+)
+
+RAG_QS = [
+    "who owns the go/no-go decision?", "who can abort unilaterally?",
+    "when does the terminal count begin?", "how many technicians load cryogenic propellant?",
+    "what happens if tank pressure exceeds the yellow band?", "what is the cloud rule for launch?",
+    "who briefs the flight director on weather, and when?", "where are ascent-abort recovery zones listed?",
+    "what form logs an in-flight anomaly, and by when?", "how are suppliers referred to externally?",
+    "who answers pricing questions?", "what engine figures may be disclosed?",
+    "what does the recovery team do before approach?", "when is telemetry pulled post-flight?",
+    "who owns cryogenic loading?", "what may the range safety officer do at any time?",
+]
+
+
+async def _rag_beat(n: int) -> None:
+    """A sustained RAG workload: many questions against one pinned document.
+    Runs paced/sequential so prefix affinity converges and the reuse counters
+    climb steadily for the length of the run instead of blipping once."""
+    for i in range(n):
+        prompt = RAG_DOC + f"Question {i + 1}: {RAG_QS[i % len(RAG_QS)]}"
+        await _one_completion(prompt, f"RAG q{i + 1}", 24)
+
+
 @app.post("/api/loadgen")
 async def loadgen(req: Request):
     """Fire a burst of requests through the gateway.
 
-    mode=unique  → every request has a distinct prompt (load spreads out)
-    mode=shared  → every request starts with the same long prefix
-                   (prefix-cache-aware routing keeps them on one backend)
-    mode=offload → fill/evict/replay against the offload-enabled worker
+    mode=unique   → every request has a distinct prompt (load spreads out)
+    mode=shared   → every request starts with the same long prefix (converges)
+    mode=rag      → a long RAG document + many questions, paced (reuse climbs)
+    mode=offload  → fill/evict/replay against the offload-enabled worker
     """
     body = await req.json()
     n = min(int(body.get("n", 12)), 64)
@@ -593,6 +652,11 @@ async def loadgen(req: Request):
         doc_tokens = min(int(body.get("doc_tokens", 5000)), 7000)
         asyncio.create_task(_offload_beat(ep, n_docs, doc_tokens))
         return JSONResponse({"started": n_docs * 2, "mode": mode, "target": ep["name"]})
+
+    if mode == "rag":
+        n = min(int(body.get("n", 30)), 48)
+        asyncio.create_task(_rag_beat(n))
+        return JSONResponse({"started": n, "mode": mode})
     # shared runs sequentially (see below) — keep answers short so the beat
     # finishes in ~15s on stage
     max_tokens = min(int(body.get("max_tokens", 24 if mode == "shared" else 48)), 256)
@@ -724,6 +788,23 @@ def _pool_response(warning: str | None = None) -> dict:
     return out
 
 
+async def _detect_device(ep: str) -> str:
+    """Best-effort device label from the worker's model id, so a non-Apple
+    machine isn't silently mislabeled when the user leaves 'Auto-detect'."""
+    addr, _, port = ep.rpartition(":")
+    try:
+        r = await http_client.get(f"http://{addr}:{port}/v1/models", timeout=2.0)
+        data = (r.json().get("data") or [{}])[0]
+        mid = (data.get("root") or data.get("id") or "").lower()
+    except Exception:
+        return ""
+    if mid.startswith("nvidia") or "cuda" in mid or "nvfp4" in mid:
+        return "NVIDIA · CUDA"
+    if "mlx" in mid:
+        return "Apple Silicon · Metal"
+    return "vLLM worker" if mid else ""
+
+
 @app.post("/api/pool/add")
 async def pool_add(req: Request):
     body = await req.json()
@@ -732,7 +813,9 @@ async def pool_add(req: Request):
         return JSONResponse({"error": err}, status_code=400)
     device = _sanitize_device(body.get("device"))
     if MOCK:
-        return JSONResponse(mock.pool_add(ep, device))
+        return JSONResponse(mock.pool_add(ep, device or "Simulated worker"))
+    if not device:                          # 'Auto-detect' → derive from the worker
+        device = _sanitize_device(await _detect_device(ep))
     async with _pool_lock:
         lines = [l for l in _pool_lines() if _line_ep(l) != ep]
         lines.append(f"{ep}|{device}")
