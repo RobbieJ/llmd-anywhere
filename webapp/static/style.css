@@ -268,6 +268,62 @@ svg#topo { display: block; width: 100%; height: auto; margin-bottom: 0.4rem; }
 .spark-wrap .label b { color: var(--rh-text); font-family: var(--rh-font-mono); font-size: 0.78rem; }
 svg.spark { display: block; width: 100%; height: 44px; }
 
+/* ---- reshape the pool from the browser (Beat 3) ---- */
+/* action buttons pinned to the card's top-right corner; the header reserves
+   room so the wide device badge never slides under them */
+.card { position: relative; }
+.card h3 { padding-right: 3.6rem; }
+.card h3 .name { white-space: nowrap; }                 /* never split the worker name */
+.card h3 .role { white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+.card-actions { position: absolute; top: 1.05rem; right: 1.1rem; display: inline-flex; gap: 0.35rem; z-index: 2; }
+.card-btn {
+  width: 22px; height: 22px; border-radius: 4px; padding: 0;
+  border: 1px solid var(--rh-border); background: var(--rh-surface);
+  color: var(--rh-text-sub); font-size: 0.8rem; line-height: 1; cursor: pointer; flex: none;
+}
+.card-btn:hover { border-color: var(--rh-red); color: var(--rh-red); }
+.card-btn.confirm { width: auto; padding: 0 0.5rem; color: #fff; background: var(--rh-red); border-color: var(--rh-red); font-size: 0.72rem; }
+.card-btn[data-act=drain].active { border-color: var(--rh-text-sub); color: var(--rh-text-strong); background: var(--rh-bg); }
+
+.card.drained { opacity: 0.55; filter: grayscale(0.7); border-left-color: var(--rh-text-sub); }
+.state-badge { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--rh-text-sub); border: 1px solid var(--rh-text-sub); border-radius: 2px; padding: 0.05em 0.4em; }
+
+.card.add-tile { display: flex; align-items: center; justify-content: center; border-style: dashed; border-left: 1px dashed var(--rh-border); background: transparent; min-height: 120px; }
+.add-open { background: none; border: none; color: var(--rh-text-sub); font-family: var(--rh-font-display); font-weight: 500; font-size: 1.05rem; cursor: pointer; }
+.add-open:hover { color: var(--rh-text-strong); }
+.add-form { display: grid; gap: 0.6rem; width: 100%; }
+.add-form[hidden] { display: none; }        /* class rule would beat [hidden] otherwise */
+#add-device-custom[hidden] { display: none; }
+.add-form label { display: grid; gap: 0.2rem; font-size: 0.75rem; color: var(--rh-text-sub); }
+.add-form input, .add-form select {
+  background: var(--rh-surface); border: 1px solid var(--rh-border); border-radius: 4px;
+  color: var(--rh-text); font-family: var(--rh-font-mono); font-size: 0.85rem; padding: 0.5rem 0.7rem;
+}
+.add-form input.invalid { border-color: var(--status-bad); }
+.add-form input:focus, .add-form select:focus { outline: 2px solid var(--rh-red); outline-offset: -1px; }
+.add-actions { display: flex; gap: 0.6rem; }
+.add-actions .rh-button { width: auto; margin: 0; }
+.add-msg { font-size: 0.75rem; color: var(--status-bad); margin: 0; min-height: 1em; }
+.card .hint, .panel .hint { font-size: 0.75rem; color: var(--rh-text-sub); margin: 0 0 0.6rem; }
+
+/* ---- topology dot legend (warm/cold) ---- */
+.topo-legend { text-align: center; font-size: 0.72rem; color: var(--rh-text-sub); margin: -0.2rem 0 0.6rem; }
+.topo-legend .dot-warm, .topo-legend .dot-cold { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin: 0 0.3rem -1px 0; }
+.topo-legend .dot-warm { background: var(--rh-text-sub); box-shadow: 0 0 0 3px rgba(184,184,184,0.2); }
+.topo-legend .dot-cold { background: none; border: 2px solid var(--rh-text-sub); }
+
+/* ---- llm-d vs round-robin split ---- */
+.rr-split { background: var(--rh-bg-alt); border: 1px solid var(--rh-border); border-radius: 4px; padding: 0.8rem 1.1rem; margin-bottom: 1.25rem; }
+.rr-split-head { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--rh-text-sub); margin-bottom: 0.5rem; }
+.rr-row { display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.35rem; }
+.rr-k { flex: none; width: 150px; font-size: 0.8rem; color: var(--rh-text-sub); }
+.rr-bar { flex: 1; height: 16px; background: var(--rh-surface); border-radius: 3px; overflow: hidden; }
+.rr-fill { height: 100%; transition: width 0.5s; }
+.rr-fill.llmd { background: var(--status-good); }
+.rr-fill.rr { background: var(--rh-text-sub); }
+.rr-v { flex: none; width: 42px; text-align: right; font-family: var(--rh-font-mono); font-size: 0.8rem; color: var(--rh-text); }
+
 .tooltip {
   position: absolute;
   pointer-events: none;

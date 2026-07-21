@@ -27,11 +27,19 @@
 
     <div class="rh-section-label">Scheduling<button class="info-btn" data-info="scheduling">i</button></div>
     <svg id="topo" viewBox="0 0 1200 250" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="topo-legend"><span class="dot-warm"></span>warm — the chosen machine already remembered this prompt&nbsp;·&nbsp;<span class="dot-cold"></span>fresh — first time here</div>
     <div class="sched-caption">
       <span class="saved-stat"><span class="v num" id="tokens-saved">–</span>
         <span class="k">prompt tokens never recomputed<br><span id="tokens-saved-pct"></span></span></span>
       <span class="saved-stat"><span class="v num" id="cost-saved">–</span>
         <span class="k">prompt spend avoided · bill cut <span class="num" id="bill-cut">–</span><button class="info-btn" data-info="savings">i</button></span></span>
+    </div>
+    <div class="rr-split" id="rr-split" style="display:none">
+      <div class="rr-split-head">landed on a warm cache<button class="info-btn" data-info="rrsplit">i</button></div>
+      <div class="rr-row"><span class="rr-k">llm-d routing</span>
+        <div class="rr-bar"><div class="rr-fill llmd" id="rr-llmd"></div></div><span class="rr-v num" id="rr-llmd-v">–</span></div>
+      <div class="rr-row"><span class="rr-k">round-robin <span class="term" data-term="roundrobin">(blind)</span></span>
+        <div class="rr-bar"><div class="rr-fill rr" id="rr-rr"></div></div><span class="rr-v num" id="rr-rr-v">–</span></div>
     </div>
 
     <div class="traffic">
@@ -50,7 +58,7 @@
           </div>
           <div class="beat">
             <div class="beat-label"><span class="no">Beat 3</span> · Reshape the pool<button class="info-btn" data-info="beat3">i</button></div>
-            <span class="cmd">ENDPOINTS="…" scripts/mac/gen-endpoints.sh</span>
+            <p class="beat-caption">↑ On any machine card: <b>⏻ drain</b> or <b>✕ remove</b> — or <b>＋ add a machine</b>. Watch the topology and ready-count reshape live.</p>
           </div>
           <div class="beat">
             <div class="beat-label"><span class="no">Beat 4</span> · Overflow<button class="info-btn" data-info="beat4">i</button></div>
@@ -60,6 +68,7 @@
         </div>
         <div class="panel">
           <h3>The cluster is a file<button class="info-btn" data-info="file">i</button></h3>
+          <p class="hint">edited live from this page — the scheduler live-reloads it, no restart</p>
           <div class="pool-meta">
             <span><span class="v num" id="pool-ready">–</span> ready</span>
             <span id="pool-age">–</span>

@@ -34,6 +34,16 @@ EPP_CONFIG_FILE = Path(os.environ.get("EPP_CONFIG_FILE", REPO_DIR / "config" / "
 EPP_METRICS_URL = os.environ.get("EPP_METRICS_URL", "http://localhost:9090/metrics")
 MODEL_NAME = os.environ.get("MODEL_NAME", "llmd-demo")
 
+# Live pool reshaping (Beat 3 from the browser). We mutate config/pool.txt in
+# Python — one line per worker, `ip:port|device`, a leading `#` = disabled —
+# then shell out to the SAME generator the CLI uses to rewrite endpoints.yaml,
+# which the EPP live-reloads. The webapp binds 0.0.0.0 with no auth (trust your
+# LAN, per the README), so every field is validated/sanitized before it can
+# reach the file or the YAML the label lands in — no shell interpolation ever.
+POOL_FILE = Path(os.environ.get("POOL_FILE", REPO_DIR / "config" / "pool.txt"))
+GEN_SCRIPT = REPO_DIR / "scripts" / "mac" / "gen-endpoints.sh"
+SERVED_NAME = os.environ.get("SERVED_NAME", MODEL_NAME)
+
 # Device names (the heterogeneous-pool story) come from endpoints.yaml labels
 # (llm-d.ai/device), written when a worker joins the pool — see ./demo pool.
 DEVICE_LABEL = "llm-d.ai/device"
@@ -56,6 +66,15 @@ async def _lifespan(app):
 
 
 app = FastAPI(title="llm-d local demo", lifespan=_lifespan)
+
+
+@app.middleware("http")
+async def _no_cache(request: Request, call_next):
+    # a live demo should never serve a stale dashboard after an edit/redeploy
+    resp = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static"):
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
 
 # Ring buffer of recent routing decisions shown in the dashboard feed.
 decisions: deque = deque(maxlen=200)
@@ -244,6 +263,14 @@ async def state():
             "prefix_hit_pct": hit,
             "healthy": ep["healthy"],
         }
+
+    # drained workers (commented out in pool.txt) aren't in endpoints.yaml, so
+    # they never get scraped — surface them as greyed, out-of-rotation stubs so
+    # the dashboard can show "still in the file, no traffic reaching it".
+    live_keys = {f"{e['address']}:{e['port']}" for e in scraped}
+    for ep in _drained_endpoints():
+        if f"{ep['address']}:{ep['port']}" not in live_keys:
+            scraped.append(ep)
 
     try:
         pool_file = {"raw": ENDPOINTS_FILE.read_text(), "mtime": ENDPOINTS_FILE.stat().st_mtime}
@@ -595,6 +622,161 @@ async def _run_burst(tasks, sequential: bool = False):
             await t
     else:
         await asyncio.gather(*tasks)
+
+
+# ---- live pool reshaping --------------------------------------------------
+
+_IPV4_RE = re.compile(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$')
+# device label charset: letters/digits/space and the few separators the pool
+# actually uses (· × / + . ( ) _ -). Everything else is dropped, so the label
+# can never break the pool file (|) or the YAML string it becomes ("), nor
+# carry anything a shell would ever see (it doesn't — gen-endpoints reads the
+# file, we never pass the label as an argument).
+_LABEL_DROP = re.compile(r'[^A-Za-z0-9 ._/+()·×·-]')
+_pool_lock = asyncio.Lock()
+
+
+def _valid_ipv4(a: str | None) -> bool:
+    m = _IPV4_RE.match(a or "")
+    return bool(m) and all(0 <= int(o) <= 255 for o in m.groups())
+
+
+def _sanitize_device(s: str | None) -> str:
+    s = (s or "").replace("|", " ").replace('"', "").replace("\n", " ")
+    s = _LABEL_DROP.sub("", s)
+    return re.sub(r"\s+", " ", s).strip()[:48]
+
+
+def _ep_from_body(body: dict) -> tuple[str | None, str | None]:
+    addr = body.get("address")
+    port = str(body.get("port", "")).strip()
+    if not _valid_ipv4(addr):
+        return None, "address must be a literal IPv4 (e.g. 192.168.1.20)"
+    if not (port.isdigit() and 1 <= int(port) <= 65535):
+        return None, "port must be a number 1–65535"
+    return f"{addr}:{int(port)}", None
+
+
+def _pool_lines() -> list[str]:
+    try:
+        return POOL_FILE.read_text().splitlines()
+    except FileNotFoundError:
+        return []
+
+
+def _write_pool(lines: list[str]) -> None:
+    POOL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = POOL_FILE.with_suffix(".tmp")
+    tmp.write_text("\n".join(lines) + ("\n" if lines else ""))
+    tmp.replace(POOL_FILE)
+
+
+def _line_ep(line: str) -> str:
+    body = line[1:] if line.lstrip().startswith("#") else line
+    return body.split("|", 1)[0].strip()
+
+
+def _drained_endpoints() -> list[dict]:
+    """Commented-out (`#`) pool.txt lines → greyed out-of-rotation stubs."""
+    out = []
+    for line in _pool_lines():
+        s = line.lstrip()
+        if not s.startswith("#"):
+            continue
+        body = s[1:].strip()
+        ep = body.split("|", 1)[0].strip()
+        if ":" not in ep:
+            continue
+        addr, _, port = ep.rpartition(":")
+        if not _valid_ipv4(addr):
+            continue
+        device = body.split("|", 1)[1].strip() if "|" in body else ""
+        out.append({
+            "name": f"vllm-{addr.rsplit('.', 1)[-1]}-{port}",
+            "address": addr, "port": port,
+            "labels": {DEVICE_LABEL: device} if device else {},
+            "device": device or None,
+            "healthy": False, "disabled": True, "engine": "drained",
+            "metrics": {}, "cache": {}, "model_id": None,
+        })
+    return out
+
+
+async def _regen_endpoints() -> tuple[int, str]:
+    """Rerun the CLI's generator to rewrite endpoints.yaml from pool.txt."""
+    proc = await asyncio.create_subprocess_exec(
+        "bash", str(GEN_SCRIPT),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, "SERVED_NAME": SERVED_NAME},
+    )
+    _, err = await proc.communicate()
+    return proc.returncode, (err or b"").decode(errors="replace").strip()
+
+
+def _pool_response(warning: str | None = None) -> dict:
+    try:
+        pf = {"raw": ENDPOINTS_FILE.read_text(), "mtime": ENDPOINTS_FILE.stat().st_mtime}
+    except OSError:
+        pf = {"raw": "", "mtime": None}
+    out = {"ok": True, "pool_file": pf, "endpoints": load_endpoints()}
+    if warning:
+        out["warning"] = warning
+    return out
+
+
+@app.post("/api/pool/add")
+async def pool_add(req: Request):
+    body = await req.json()
+    ep, err = _ep_from_body(body)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    device = _sanitize_device(body.get("device"))
+    if MOCK:
+        return JSONResponse(mock.pool_add(ep, device))
+    async with _pool_lock:
+        lines = [l for l in _pool_lines() if _line_ep(l) != ep]
+        lines.append(f"{ep}|{device}")
+        _write_pool(lines)
+        rc, gen_err = await _regen_endpoints()
+    return JSONResponse(_pool_response(gen_err if rc else None))
+
+
+@app.post("/api/pool/remove")
+async def pool_remove(req: Request):
+    body = await req.json()
+    ep, err = _ep_from_body(body)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    if MOCK:
+        return JSONResponse(mock.pool_remove(ep))
+    async with _pool_lock:
+        lines = [l for l in _pool_lines() if _line_ep(l) != ep]
+        _write_pool(lines)
+        rc, gen_err = await _regen_endpoints()
+    return JSONResponse(_pool_response(gen_err if rc else None))
+
+
+@app.post("/api/pool/disable")
+async def pool_disable(req: Request):
+    """Comment a worker out (drain) without deleting it, or restore it."""
+    body = await req.json()
+    ep, err = _ep_from_body(body)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    disabled = bool(body.get("disabled", True))
+    if MOCK:
+        return JSONResponse(mock.pool_disable(ep, disabled))
+    async with _pool_lock:
+        out = []
+        for l in _pool_lines():
+            if _line_ep(l) == ep:
+                bare = l.lstrip()[1:].lstrip() if l.lstrip().startswith("#") else l
+                out.append(f"# {bare}" if disabled else bare)
+            else:
+                out.append(l)
+        _write_pool(out)
+        rc, gen_err = await _regen_endpoints()
+    return JSONResponse(_pool_response(gen_err if rc else None))
 
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")

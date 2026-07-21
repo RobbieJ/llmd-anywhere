@@ -91,6 +91,27 @@ document.getElementById('glossary-list').innerHTML =
 /* ---------- info popovers: the page's explanatory prose, on demand ---------- */
 
 const INFO = {
+  addworker: `<h4>Add a machine</h4>
+    <p>Type a machine's LAN address and port; it's appended to the pool file and the
+    <span class="term" data-term="epp">scheduler</span> live-reloads within a couple of seconds — no
+    restart. The address must be a literal IPv4: the file-based discovery plugin doesn't resolve
+    hostnames.</p>
+    <p>If the machine isn't answering yet it's written to the file but held out of the live pool
+    until it responds — the same health check the command line does.</p>`,
+  drain: `<h4>Drain a machine</h4>
+    <p>Draining comments the machine out of the list the scheduler reads — the line stays in the
+    file, so nothing is lost, but no new request is sent there. Undo it and the machine rejoins in
+    seconds.</p>
+    <p>This is the safe way to take a machine out of rotation. (Leaving a <i>dead</i> machine listed
+    is the opposite mistake — to the scheduler an unreachable worker looks perfectly idle, so it
+    keeps winning traffic. That's why the pool file skips machines that don't answer.)</p>`,
+  rrsplit: `<h4>llm-d vs. blind round-robin</h4>
+    <p>For every recent request the dashboard also asks: which machine would a cache-blind
+    <span class="term" data-term="roundrobin">round-robin</span> balancer have picked? The bars
+    compare how often each approach landed on a machine that <i>already remembered</i> the prompt's
+    beginning — a warm cache instead of redone work.</p>
+    <p>Round-robin's bar is a live counterfactual: that machine never actually ran the request, so
+    it's an estimate from the same stats the scheduler saw.</p>`,
   overview: `<h4>What is this?</h4>
     <p>Two very different machines serve one AI model behind one address. The list of machines is a
     plain text file (<span class="mono">endpoints.yaml</span>); a small scheduler — the
@@ -146,8 +167,10 @@ const INFO = {
     them where that work is already remembered — expect them all to land on ONE machine, and the
     savings counter to climb.</p>`,
   beat3: `<h4>Beat 3 · Reshape the pool</h4>
-    <p>Run the command in a terminal to add or remove machines. The scheduler watches the file and
-    reloads it live — the picture above reshapes in seconds, no restarts.</p>`,
+    <p>The pool is a text file — and you can edit it right here. Every machine card has a
+    <b>⏻ drain</b> (take it out of rotation, reversibly) and <b>✕ remove</b>; the dashed tile adds
+    one. The scheduler watches the file and reloads it live, so the picture above reshapes in
+    seconds, no restarts.</p>`,
   beat4: `<h4>Beat 4 · Overflow (KV offloading)</h4>
     <p>8 big documents are sent to the worker whose fast <span class="term" data-term="kv">KV cache</span>
     tier has been made deliberately small — they overflow it, and evicted memory spills into an
@@ -214,10 +237,11 @@ function renderInstances(state) {
   document.getElementById('model-name').textContent = state.model;
   const maxKv = Math.max(1, ...state.endpoints.map(e => e.cache?.kv_tokens || 0));
 
-  // drop cards for endpoints removed from endpoints.yaml (live-reload demo)
+  // drop cards for endpoints removed from endpoints.yaml (live-reload demo);
+  // leave the persistent "＋ add a machine" tile in place
   const current = new Set(state.endpoints.map(e => `card-${e.name}`));
   for (const card of [...root.children]) {
-    if (!current.has(card.id)) card.remove();
+    if (card.id.startsWith('card-') && !current.has(card.id)) card.remove();
   }
 
   for (const ep of state.endpoints) {
@@ -230,7 +254,12 @@ function renderInstances(state) {
       card.style.setProperty('--series', color);
       card.innerHTML = `
         <h3><span class="chip"></span><span class="name"></span>
-            <span class="role" style="display:none"></span></h3>
+            <span class="state-badge" style="display:none">drained</span>
+            <span class="role" style="display:none"></span>
+            <span class="card-actions">
+              <button class="card-btn" data-act="drain" title="drain / restore">⏻</button>
+              <button class="card-btn" data-act="remove" title="remove from pool">✕</button>
+            </span></h3>
         <p class="addr"></p>
         <p class="model-line" data-f="model"></p>
         <div class="stats">
@@ -257,15 +286,23 @@ function renderInstances(state) {
         </div>`;
       root.appendChild(card);
     }
+    card.dataset.address = ep.address;
+    card.dataset.port = ep.port;
+    const drained = !!ep.disabled;
+    card.classList.toggle('drained', drained);
+    card.querySelector('.state-badge').style.display = drained ? '' : 'none';
+    card.querySelector('[data-act=drain]').classList.toggle('active', drained);
     card.querySelector('.name').textContent = ep.name;
     const role = ep.device
       || (ep.labels && ep.labels['llm-d.ai/role'])
       || (ep.engine && ep.engine !== 'vllm' ? ep.engine : null);
     const roleEl = card.querySelector('.role');
     if (role) { roleEl.style.display = ''; roleEl.textContent = role; }
+    const statusTxt = drained ? 'drained' : (ep.healthy ? 'healthy' : 'unreachable');
+    const statusCol = drained ? 'var(--rh-text-sub)' : (ep.healthy ? 'var(--status-good)' : 'var(--status-bad)');
     card.querySelector('.addr').innerHTML =
-      `${ep.address}:${ep.port} · <span style="color:${ep.healthy ? 'var(--status-good)' : 'var(--status-bad)'}">` +
-      `${ep.healthy ? '●' : '○'}</span> ${ep.healthy ? 'healthy' : 'unreachable'}`;
+      `${ep.address}:${ep.port} · <span style="color:${statusCol}">` +
+      `${ep.healthy ? '●' : '○'}</span> ${statusTxt}`;
     card.querySelector('[data-f=model]').textContent = shortModel(ep.model_id) || '';
 
     const m = ep.metrics || {};
@@ -332,7 +369,118 @@ function renderInstances(state) {
         recent > 0 ? `▲ ${fmtTokens(recent)} reused in the last minute` : '';
     }
   }
+  ensureAddTile(root);
 }
+
+// The dashed "＋ add a machine" tile — the browser-side of Beat 3. Created once,
+// always kept as the last cell of the grid so adding a worker grows the grid.
+function ensureAddTile(root) {
+  let tile = document.getElementById('add-tile');
+  if (!tile) {
+    tile = document.createElement('div');
+    tile.className = 'card add-tile';
+    tile.id = 'add-tile';
+    tile.innerHTML = `
+      <button class="add-open" id="add-open">＋ add a machine<button class="info-btn" data-info="addworker">i</button></button>
+      <form class="add-form" id="add-form" hidden>
+        <label>address<input id="add-addr" inputmode="decimal" autocomplete="off" placeholder="192.168.1.20"></label>
+        <label>port<input id="add-port" type="number" min="1" max="65535" value="8001"></label>
+        <label>device
+          <select id="add-device">
+            <option>Apple Silicon · Metal</option>
+            <option>NVIDIA · CUDA</option>
+            <option>vLLM worker</option>
+            <option value="__custom">Custom…</option>
+          </select>
+        </label>
+        <input id="add-device-custom" hidden maxlength="40" placeholder="short label">
+        <div class="add-actions">
+          <button type="submit" class="rh-button" id="add-submit" disabled>Add to pool</button>
+          <button type="button" class="rh-button secondary" id="add-cancel">Cancel</button>
+        </div>
+        <p class="add-msg" id="add-msg"></p>
+      </form>`;
+    root.appendChild(tile);
+    wireAddTile(tile);
+  } else {
+    root.appendChild(tile);   // keep it last after new worker cards append
+  }
+}
+
+const validIPv4 = s => {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec((s || '').trim());
+  return !!m && m.slice(1).every(o => +o <= 255);
+};
+// device becomes `ip:port|device` in pool.txt — strip the delimiter, newlines,
+// and a leading '#' (which would comment the line out). The server re-sanitizes.
+const cleanDevice = s => (s || '').replace(/[|\r\n]/g, ' ').replace(/^#+/, '').trim().slice(0, 40);
+
+function wireAddTile(tile) {
+  const openBtn = tile.querySelector('#add-open');
+  const form = tile.querySelector('#add-form');
+  const addr = tile.querySelector('#add-addr');
+  const portEl = tile.querySelector('#add-port');
+  const deviceSel = tile.querySelector('#add-device');
+  const deviceCustom = tile.querySelector('#add-device-custom');
+  const submit = tile.querySelector('#add-submit');
+  const msg = tile.querySelector('#add-msg');
+
+  const openForm = () => { form.hidden = false; openBtn.hidden = true; addr.focus(); };
+  const closeForm = () => { form.hidden = true; openBtn.hidden = false; form.reset(); deviceCustom.hidden = true; msg.textContent = ''; validate(); };
+  openBtn.addEventListener('click', (e) => { if (e.target.closest('.info-btn')) return; openForm(); });
+  tile.querySelector('#add-cancel').addEventListener('click', closeForm);
+
+  const validate = () => {
+    const okAddr = validIPv4(addr.value);
+    addr.classList.toggle('invalid', !!addr.value && !okAddr);
+    const p = +portEl.value;
+    submit.disabled = !(okAddr && p >= 1 && p <= 65535);
+  };
+  addr.addEventListener('input', () => { addr.value = addr.value.replace(/[^0-9.]/g, ''); validate(); });
+  portEl.addEventListener('input', validate);
+  deviceSel.addEventListener('change', () => {
+    deviceCustom.hidden = deviceSel.value !== '__custom';
+    if (!deviceCustom.hidden) deviceCustom.focus();
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const address = addr.value.trim();
+    const port = String(+portEl.value);
+    const device = cleanDevice(deviceSel.value === '__custom' ? deviceCustom.value : deviceSel.value);
+    msg.style.color = ''; msg.textContent = 'writing to the pool file…';
+    submit.disabled = true;
+    try {
+      await poolMutate('add', { address, port, device });
+      const live = lastEndpoints.some(ep => ep.address === address && String(ep.port) === port);
+      if (live) { closeForm(); }
+      else { msg.textContent = 'added to the file — held out of the live pool until it answers'; }
+    } catch (err) { msg.textContent = err.message; }
+    validate();
+  });
+}
+
+// per-card drain / remove (delegated; two-step remove needs no modal)
+document.getElementById('instances').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('.card-btn');
+  if (!btn) return;
+  const card = btn.closest('.card');
+  const { address, port } = card.dataset;
+  if (btn.dataset.act === 'remove') {
+    if (!btn.classList.contains('confirm')) {
+      card.querySelectorAll('.card-btn.confirm').forEach(b => { b.classList.remove('confirm'); b.textContent = '✕'; });
+      btn.classList.add('confirm'); btn.textContent = 'remove?';
+      setTimeout(() => { btn.classList.remove('confirm'); btn.textContent = '✕'; }, 3000);
+      return;
+    }
+    btn.disabled = true;
+    try { await poolMutate('remove', { address, port }); } catch { btn.disabled = false; }
+  } else if (btn.dataset.act === 'drain') {
+    const disabled = !card.classList.contains('drained');
+    btn.disabled = true;
+    try { await poolMutate('disable', { address, port, disabled }); } finally { btn.disabled = false; }
+  }
+});
 
 function drawSpark(svg, points, color, name) {
   const W = svg.clientWidth || 300, H = 44, PAD = 3;
@@ -442,7 +590,7 @@ function renderTopology(state, epp) {
 
   // worker nodes + paths (rebuild only when the pool changes)
   const eps = state.endpoints;
-  const key = eps.map(e => `${e.name}:${e.healthy ? 1 : 0}:${e.model_id || ''}`).join('|');
+  const key = eps.map(e => `${e.name}:${e.healthy ? 1 : 0}:${e.disabled ? 'd' : ''}:${e.model_id || ''}`).join('|');
   if (key !== topoWorkersKey) {
     topoWorkersKey = key;
     const gw = document.getElementById('topo-workers');
@@ -454,27 +602,31 @@ function renderTopology(state, epp) {
     eps.forEach((ep, i) => {
       const cy = n === 1 ? 152 : 130 + (i - (n - 1) / 2) * spacing;
       const color = colorFor(ep.name);
-      const grp = svgEl('g', ep.healthy ? {} : { opacity: 0.45 });
-      const path = svgEl('path', { class: 'flow-path', d: `M 465 152 C 640 152 780 ${cy} 935 ${cy}` });
+      const grp = svgEl('g', ep.disabled ? { opacity: 0.4 } : (ep.healthy ? {} : { opacity: 0.45 }));
+      // drained workers are detached from the flow — a short dashed stub, no
+      // connecting path, so "no traffic reaches it" reads visually
+      const path = ep.disabled
+        ? svgEl('path', { class: 'flow-path', d: `M 900 ${cy} L 935 ${cy}`, style: 'stroke-dasharray:4 5' })
+        : svgEl('path', { class: 'flow-path', d: `M 465 152 C 640 152 780 ${cy} 935 ${cy}` });
       grp.appendChild(path);
       grp.appendChild(svgEl('rect', { class: 'node-box', x: 935, y: cy - 28, width: 235, height: 56, rx: 4, style: `stroke:${color};stroke-width:1.5` }));
-      grp.appendChild(svgEl('circle', { cx: 953, cy: cy - 13, r: 5, fill: ep.healthy ? 'var(--status-good)' : 'var(--status-bad)' }));
+      grp.appendChild(svgEl('circle', { cx: 953, cy: cy - 13, r: 5, fill: ep.disabled ? 'var(--rh-text-sub)' : (ep.healthy ? 'var(--status-good)' : 'var(--status-bad)') }));
       grp.appendChild(svgEl('text', { class: 'worker-name', x: 965, y: cy - 8 }, ep.name));
       grp.appendChild(svgEl('text', { class: 'node-sub', x: 953, y: cy + 7 },
-        (ep.device || 'vLLM worker') + (ep.healthy ? '' : ' · unreachable')));
+        (ep.device || 'vLLM worker') + (ep.disabled ? ' · drained' : (ep.healthy ? '' : ' · unreachable'))));
       const model = shortModel(ep.model_id);
       if (model) grp.appendChild(svgEl('text', { class: 'mono-label', x: 953, y: cy + 21 }, model));
       const chips = svgEl('g', {});
       grp.appendChild(chips);
       gw.appendChild(grp);
-      workerNodes.set(ep.name, { path, chips, cy, color });
+      workerNodes.set(ep.name, { path, chips, cy, color, disabled: !!ep.disabled });
     });
   }
 
   // live queue chips: filled = answering now, hollow = waiting in line
   for (const ep of eps) {
     const node = workerNodes.get(ep.name);
-    if (!node) continue;
+    if (!node || node.disabled) continue;
     const m = ep.metrics || {};
     node.chips.innerHTML = '';
     const running = Math.round(m.running || 0), waiting = Math.round(m.waiting || 0);
@@ -502,7 +654,7 @@ function eppThink() {
   setTimeout(() => box.classList.remove('think'), 250);
 }
 
-function spawnDot(name, count) {
+function spawnDot(name, count, warm) {
   const node = workerNodes.get(name);
   if (!node) return;
   eppThink();
@@ -510,7 +662,7 @@ function spawnDot(name, count) {
     path: node.path, len: node.path.getTotalLength(),
     start: performance.now(), dur: 1200,
     color: seriesColor.get(name) || FALLBACK,
-    count,
+    count, warm: !!warm,
   });
   if (flightDots.length === 1) requestAnimationFrame(tickDots);
 }
@@ -546,8 +698,16 @@ function tickDots(now) {
     if (d.back) {
       // the answer: a hollow dot streaming back to "your app"
       gd.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: 4, fill: 'none', stroke: d.color, 'stroke-width': 2 }));
-    } else {
+    } else if (d.warm) {
+      // warm hit: filled dot with a soft halo — the chosen machine remembered it
+      gd.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: 10, fill: d.color, opacity: 0.18 }));
       gd.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: 5.5, fill: d.color, stroke: '#0D0618', 'stroke-width': 1.5 }));
+      if (d.count > 1) {
+        gd.appendChild(svgEl('text', { x: p.x, y: p.y - 11, 'text-anchor': 'middle', class: 'mono-label', style: `fill:${d.color}` }, `×${d.count}`));
+      }
+    } else {
+      // cold: hollow ring — fresh work, nothing cached here
+      gd.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: 5, fill: 'none', stroke: d.color, 'stroke-width': 2 }));
       if (d.count > 1) {
         gd.appendChild(svgEl('text', { x: p.x, y: p.y - 9, 'text-anchor': 'middle', class: 'mono-label', style: `fill:${d.color}` }, `×${d.count}`));
       }
@@ -798,22 +958,53 @@ function renderInsights(decisions) {
   strip.innerHTML = parts.join('<span style="opacity:0.4">·</span>');
 }
 
+// standing "llm-d vs blind round-robin" scoreboard: for each recent request,
+// did the chosen worker land on a warm cache, and would round-robin's pick
+// have? The RR side is a counterfactual (that machine never ran it) — same
+// comparable set the insight strip trusts.
+function renderRrSplit(decisions) {
+  const box = document.getElementById('rr-split');
+  if (!box) return;
+  const rows = decisions.filter(d => d.ok && (d.kind === 'loadgen' || d.kind === 'chat')
+    && d.rr_pick && d.signals?.[d.rr_pick]).slice(-40);
+  if (rows.length < 6) { box.style.display = 'none'; return; }
+  let llmd = 0, rr = 0;
+  for (const d of rows) {
+    if ((chosenHit(d) ?? 0) >= 50) llmd++;
+    if ((d.signals[d.rr_pick].prefix_hit_pct ?? 0) >= 50) rr++;
+  }
+  const lp = Math.round(100 * llmd / rows.length), rp = Math.round(100 * rr / rows.length);
+  box.style.display = '';
+  document.getElementById('rr-llmd').style.width = lp + '%';
+  document.getElementById('rr-rr').style.width = rp + '%';
+  document.getElementById('rr-llmd-v').textContent = lp + '%';
+  document.getElementById('rr-rr-v').textContent = rp + '%';
+}
+
 function renderDecisions(decisions, epp) {
   const feed = document.getElementById('feed');
   const empty = document.getElementById('feed-empty');
   const rows = decisions.slice(-30).reverse();
   empty.style.display = rows.length ? 'none' : '';
 
-  // launch topology dots for decisions new since the last poll, batched per worker
+  // launch topology dots for decisions new since the last poll, batched per
+  // worker AND by cache warmth so the animation itself carries the thesis:
+  // filled dot = the chosen machine already had this prompt warm, hollow = fresh
   const newByWorker = new Map();
   for (const d of decisions) {
     if (seenDecisions.has(d.id)) continue;
     seenDecisions.add(d.id);
     if (!seenAnything) continue;
     const name = shortName(d.served_by === 'unknown' ? null : d.served_by, lastEndpoints);
-    newByWorker.set(name, (newByWorker.get(name) || 0) + 1);
+    const hit = chosenHit(d);
+    const b = newByWorker.get(name) || { warm: 0, cold: 0 };
+    (hit != null && hit >= 50) ? b.warm++ : b.cold++;
+    newByWorker.set(name, b);
   }
-  for (const [name, count] of newByWorker) spawnDot(name, count);
+  for (const [name, b] of newByWorker) {
+    if (b.warm) spawnDot(name, b.warm, true);
+    if (b.cold) spawnDot(name, b.cold, false);
+  }
   seenAnything = true;
 
   feed.innerHTML = '';
@@ -1151,29 +1342,46 @@ function setPill(id, ok, label) {
   pill.childNodes[1].textContent = label;
 }
 
+async function refresh() {
+  const [state, dec, epp] = await Promise.all([
+    fetch('/api/state').then(r => r.json()),
+    fetch('/api/decisions').then(r => r.json()),
+    fetch('/api/epp').then(r => r.json()),
+  ]);
+  lastEndpoints = state.endpoints;
+  lastEpp = epp;
+  // fix series colors in endpoint-file order before anything else renders
+  state.endpoints.forEach(ep => colorFor(ep.name));
+  renderInstances(state);
+  renderTopology(state, epp);
+  renderSavings(state);
+  renderPoolFile(state, epp);
+  renderDecisions(dec.decisions, epp);
+  renderInsights(dec.decisions);
+  renderRrSplit(dec.decisions);
+  updateBeatCaptions(dec.decisions);
+  updateOffloadBeat(dec.decisions);
+  renderPresenter(state, epp, dec.decisions);
+  setPill('pill-gateway', state.gateway_healthy, 'gateway');
+  setPill('pill-epp', epp.healthy, 'endpoint picker');
+}
+
 async function poll() {
-  try {
-    const [state, dec, epp] = await Promise.all([
-      fetch('/api/state').then(r => r.json()),
-      fetch('/api/decisions').then(r => r.json()),
-      fetch('/api/epp').then(r => r.json()),
-    ]);
-    lastEndpoints = state.endpoints;
-    lastEpp = epp;
-    // fix series colors in endpoint-file order before anything else renders
-    state.endpoints.forEach(ep => colorFor(ep.name));
-    renderInstances(state);
-    renderTopology(state, epp);
-    renderSavings(state);
-    renderPoolFile(state, epp);
-    renderDecisions(dec.decisions, epp);
-    renderInsights(dec.decisions);
-    updateBeatCaptions(dec.decisions);
-    updateOffloadBeat(dec.decisions);
-    renderPresenter(state, epp, dec.decisions);
-    setPill('pill-gateway', state.gateway_healthy, 'gateway');
-    setPill('pill-epp', epp.healthy, 'endpoint picker');
-  } catch { /* backend restarting; try again next tick */ }
+  try { await refresh(); } catch { /* backend restarting; try again next tick */ }
   setTimeout(poll, POLL_MS);
 }
 poll();
+
+// Reshape the pool from the browser (Beat 3). Every control routes through
+// here; /api/state is the source of truth, so a forced refresh reconciles the
+// optimistic change within one frame.
+async function poolMutate(path, body) {
+  const r = await fetch('/api/pool/' + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await r.json().catch(() => ({}));
+  try { await refresh(); } catch { /* next tick */ }
+  if (!r.ok) throw new Error(data.error || 'pool change failed');
+  return data;
+}

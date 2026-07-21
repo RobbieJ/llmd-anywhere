@@ -49,6 +49,14 @@ _warm_worker = WORKERS[1]["name"]   # who currently "holds" the shared prefix
 def state() -> dict:
     endpoints = []
     for w in WORKERS:
+        if w.get("disabled"):        # drained: greyed, out-of-rotation stub
+            endpoints.append({
+                **{k: w[k] for k in ("name", "address", "port", "labels")},
+                "healthy": False, "disabled": True, "engine": "drained",
+                "device": w["labels"]["llm-d.ai/device"],
+                "metrics": {}, "cache": {}, "model_id": None,
+            })
+            continue
         s = _stats[w["name"]]
         endpoints.append({
             **{k: w[k] for k in ("name", "address", "port", "labels")},
@@ -70,7 +78,7 @@ def state() -> dict:
     pool_raw = "# simulated pool (MOCK=1) — no real machines behind this\nendpoints:\n" + "".join(
         f'  - name: {w["name"]}\n    address: "{w["address"]}"\n    port: "{w["port"]}"\n'
         f'    labels:\n      model: {MODEL}\n      llm-d.ai/device: "{w["labels"]["llm-d.ai/device"]}"\n'
-        for w in WORKERS
+        for w in WORKERS if not w.get("disabled")
     )
     return {
         "ts": time.time(), "model": MODEL, "gateway": "mock://gateway",
@@ -112,10 +120,52 @@ def _signals() -> dict:
 
 
 def _pick(mode: str, i: int) -> dict:
+    active = [w for w in WORKERS if not w.get("disabled")] or WORKERS
     if mode == "shared":
-        return next(w for w in WORKERS if w["name"] == _warm_worker)
+        return next((w for w in active if w["name"] == _warm_worker), active[0])
     # unique: spread, lightly favouring the shorter queue
-    return min(WORKERS, key=lambda w: _stats[w["name"]]["waiting"] + random.random())
+    return min(active, key=lambda w: _stats[w["name"]]["waiting"] + random.random())
+
+
+def _pool_response() -> dict:
+    s = state()
+    return {
+        "ok": True,
+        "pool_file": {"raw": s["pool_file"]["raw"], "mtime": time.time()},
+        "endpoints": [{"name": e["name"], "address": e["address"],
+                       "port": e["port"], "labels": e["labels"]} for e in s["endpoints"]],
+    }
+
+
+def pool_add(ep: str, device: str) -> dict:
+    ip, port = ep.split(":")
+    WORKERS[:] = [w for w in WORKERS if f'{w["address"]}:{w["port"]}' != ep]
+    name = f"vllm-{ip.split('.')[-1]}-{port}"
+    WORKERS.append({
+        "name": name, "address": ip, "port": port,
+        "labels": {"model": MODEL, "llm-d.ai/device": device or "Simulated worker"},
+        "kv_tokens": 415152, "dtype": None, "latency": (0.5, 1.4), "disabled": False,
+    })
+    _stats[name] = {
+        "running": 0, "waiting": 0, "gen_tokens": 0.0, "attempts": 0,
+        "prefix_hits": 0.0, "prefix_queries": 0.0,
+        "prompt_cached": 0.0, "prompt_restored": 0.0, "prompt_computed": 0.0,
+    }
+    return _pool_response()
+
+
+def pool_remove(ep: str) -> dict:
+    for w in [w for w in WORKERS if f'{w["address"]}:{w["port"]}' == ep]:
+        WORKERS.remove(w)
+        _stats.pop(w["name"], None)
+    return _pool_response()
+
+
+def pool_disable(ep: str, disabled: bool) -> dict:
+    for w in WORKERS:
+        if f'{w["address"]}:{w["port"]}' == ep:
+            w["disabled"] = disabled
+    return _pool_response()
 
 
 async def _one(worker: dict, tag: str, kind: str, record) -> None:
