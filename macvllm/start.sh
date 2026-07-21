@@ -66,7 +66,7 @@ nohup env VLLM_METAL_MEMORY_FRACTION="$FRACTION" "$VENV/bin/vllm" serve "$MODEL"
   --port "$PORT" \
   --max-model-len "$MAX_MODEL_LEN" \
   --enable-prefix-caching \
-  "${offload_args[@]}" \
+  ${offload_args[@]+"${offload_args[@]}"} \
   > "$log" 2>&1 &
 echo $! > "$pidfile"
 

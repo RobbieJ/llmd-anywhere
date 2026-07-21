@@ -57,7 +57,7 @@ for i in $(seq 0 $((NUM_INSTANCES - 1))); do
     --gpu-memory-utilization "$GPU_FRAC" \
     --max-model-len "$MAX_MODEL_LEN" \
     --enable-prefix-caching \
-    "${extra_args[@]}" \
+    ${extra_args[@]+"${extra_args[@]}"} \
     > "$log" 2>&1 &
   echo $! > "$pidfile"
   echo "    vllm-$i -> port $port (pid $(cat "$pidfile"), log $log)"
