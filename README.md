@@ -10,8 +10,9 @@ A Red Hat-branded live dashboard visualizes every scheduling decision: an
 animated request-flow topology, per-worker cards showing the real underlying
 model, KV-cache/queue/throughput meters and a **"work never redone" bar**
 (each machine's own cached-vs-recomputed token split, in tokens *and*
-dollars), pool-wide prefix-cache savings counters, click-to-expand "why did
-the scheduler pick that worker?" score bars, and a chat with
+dollars), pool-wide prefix-cache savings counters, a **head-to-head against a
+blind round-robin balancer** on the same request stream, click-to-expand "why
+did the scheduler pick that worker?" score bars, and a chat with
 **conversational memory** — watch a
 conversation pin itself to the worker whose KV cache holds its history, then
 clear the memory and watch the pin release.
@@ -19,7 +20,7 @@ clear the memory and watch the pin release.
 Based on ["No Kubernetes? No Problem — llm-d Now Runs Anywhere"](https://medium.com/@ezrasilvera/no-kubernetes-no-problem-llm-d-now-runs-anywhere-8b56b43e714c)
 and the official [no-kubernetes-deployment guide](https://github.com/llm-d/llm-d/tree/main/guides/no-kubernetes-deployment).
 
-![The dashboard (mock mode): a heterogeneous pool, the scheduler topology, prefix-cache savings, and a converged shared-prefix burst](docs/img/dashboard.png)
+![The dashboard (mock mode): two very different machines behind one address, each machine's own cached-vs-recomputed "work never redone" bar, the scheduler topology, and the live prefix-cache savings counter](docs/img/dashboard.png)
 
 > Personal demo project — not an official llm-d or Red Hat product. It runs
 > llm-d's published images and configs, and uses Red Hat's
@@ -173,11 +174,14 @@ See [docs/stage-script.md](docs/stage-script.md) for the full talk track.
    (as real apps do) — that's what pushes each conversation's prefix past the
    EPP indexer's 256-byte block size so affinity can engage.
 
-The routing panel also shows live **warm-vs-cold latency medians** and a
-**round-robin counterfactual** ("N of the last M requests would have missed the
-warm cache under round-robin — ~X reused tokens preserved by routing"), and
-pressing **`c`** toggles a presenter caption bar that narrates the latest
-event for the room.
+The routing panel puts llm-d **head-to-head with a blind round-robin balancer**
+on the same request stream: two bars show what share of requests each router
+landed on a warm cache (llm-d's is visibly longer), a plain-language line names
+how many cold starts routing dodged, and a **measured** warm-vs-cold latency
+figure shows the speed payoff. llm-d's side is measured (those requests actually
+ran there); round-robin's is a labelled **estimate** — a counterfactual, since
+that machine never ran the request. Pressing **`c`** toggles a presenter
+caption bar that narrates the latest event for the room.
 
 ## How it works
 

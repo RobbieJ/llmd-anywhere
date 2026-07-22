@@ -27,8 +27,7 @@ Press **Send 12 unique prompts**.
 > scheduler's job is simply: keep every line short. Watch the dots — they fan
 > out across both machines. No machine builds a queue."
 
-Point at the queue chips appearing on the worker nodes, then the result
-caption and the mixed-color ribbon.
+Point at the queue chips appearing on the worker nodes and the result caption.
 
 ## Beat 2 — Converge (2 min)
 
@@ -40,10 +39,9 @@ Press **Send 12 shared-prefix prompts**.
 > KV cache. The scheduler's prefix scorer notices — and sends every following
 > request to the same place."
 
-Watch: all dots go to one worker; the ribbon runs solid in one color; the
-**tokens never recomputed** and **dollar** counters climb — and on the winning
-machine's card, the **work never redone** bar ticks up with a
-"▲ reused in the last minute" line.
+Watch: all dots go to one worker; the **tokens never recomputed** and
+**dollar** counters climb — and on the winning machine's card, the **work never
+redone** bar ticks up with a "▲ reused in the last minute" line.
 
 > "Each machine also keeps its own score — this bar is that machine's lifetime
 > split of prompt work served from cache versus recomputed, priced the same
@@ -53,6 +51,17 @@ machine's card, the **work never redone** bar ticks up with a
 > charge for exactly this: cached input tokens are ~10× cheaper than fresh
 > ones. llm-d's own benchmarks: 3× throughput, 2× faster first token versus
 > round-robin."
+
+Then point at the **Routing decisions** panel — the head-to-head:
+
+> "And here's the proof, not the promise. Same requests, two routers. The top
+> bar is llm-d; the bottom is a blind round-robin balancer on the identical
+> stream. Green is a warm cache hit, grey is work recomputed from scratch —
+> llm-d's green bar is clearly longer. Down here it names it: llm-d served N of
+> these from cache that round-robin would have recomputed cold, and warm
+> requests came back several times faster. The llm-d numbers are measured;
+> round-robin's are a labelled estimate, since that machine never actually ran
+> the request."
 
 Click the newest decision row:
 
