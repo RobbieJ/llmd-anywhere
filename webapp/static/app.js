@@ -106,12 +106,18 @@ const INFO = {
     is the opposite mistake — to the scheduler an unreachable worker looks perfectly idle, so it
     keeps winning traffic. That's why the pool file skips machines that don't answer.)</p>`,
   rrsplit: `<h4>llm-d vs. blind round-robin</h4>
-    <p>For every recent request the dashboard also asks: which machine would a cache-blind
-    <span class="term" data-term="roundrobin">round-robin</span> balancer have picked? The bars
-    compare how often each approach landed on a machine that <i>already remembered</i> the prompt's
-    beginning — a warm cache instead of redone work.</p>
-    <p>Round-robin's bar is a live counterfactual: that machine never actually ran the request, so
-    it's an estimate from the same stats the scheduler saw.</p>`,
+    <p><span class="lead">What ·</span> The same recent requests, scored two ways. The top row of the
+    tape is where llm-d actually sent each one; the bottom row is where a cache-blind
+    <span class="term" data-term="roundrobin">round-robin</span> balancer would have sent it. A
+    filled cell landed on a <span class="term" data-term="prefixhit">warm cache</span> (work already
+    remembered); a hollow cell is fresh work. A green-ringed column is one llm-d kept warm that
+    round-robin would have sent cold.</p>
+    <p><span class="lead">Why ·</span> Cache hits are the whole payoff — the measured line shows warm
+    requests come back several times faster than cold ones. llm-d chases those hits; round-robin
+    can't see them.</p>
+    <p><span class="lead">How ·</span> llm-d's side is <b>measured</b> — those requests really ran
+    there. Round-robin's side is a labelled <b>estimate</b> (a counterfactual: that machine never
+    actually ran the request), computed from the same live stats the scheduler saw.</p>`,
   overview: `<h4>What is this?</h4>
     <p>Two very different machines serve one AI model behind one address. The list of machines is a
     plain text file (<span class="mono">endpoints.yaml</span>); a small scheduler — the
@@ -881,6 +887,10 @@ function median(xs) {
   return s[Math.floor(s.length / 2)];
 }
 
+// per-worker load + speed. Two labelled bars per machine: share of traffic now,
+// and median latency — so the warm-pinned-fast vs cold-slow contrast is visual,
+// not buried in tail text. (This is what "6 / scheduler lifetime 21 · median
+// 3.5s" used to say, made legible.)
 function renderScoreboard(rows, epp) {
   const board = document.getElementById('scoreboard');
   const counts = new Map();
@@ -889,35 +899,30 @@ function renderScoreboard(rows, epp) {
     const name = shortName(d.served_by === 'unknown' ? null : d.served_by, lastEndpoints);
     counts.set(name, (counts.get(name) || 0) + 1);
   }
+  const meds = new Map();
+  for (const name of counts.keys()) {
+    meds.set(name, median(rows.filter(d => d.ok &&
+      shortName(d.served_by === 'unknown' ? null : d.served_by, lastEndpoints) === name).map(d => d.latency_ms)));
+  }
+  const maxCount = Math.max(1, ...counts.values());
+  const validMeds = [...meds.values()].filter(m => m != null);
+  const maxMed = Math.max(1, ...validMeds);
   board.innerHTML = '';
   for (const [name, count] of counts) {
     const color = seriesColor.get(name) || FALLBACK;
     const lifetime = epp?.attempts?.[name];
-    const med = median(rows.filter(d => d.ok &&
-      shortName(d.served_by === 'unknown' ? null : d.served_by, lastEndpoints) === name).map(d => d.latency_ms));
+    const med = meds.get(name);
     const tile = document.createElement('div');
     tile.className = 'score-tile';
     tile.style.setProperty('--series', color);
     tile.innerHTML =
-      `<div class="name"><span class="chip" style="background:${color};width:10px;height:10px;border-radius:3px"></span>${escapeHtml(name)}</div>` +
-      `<div class="v num">${count}</div>` +
-      `<div class="sub num">${lifetime != null ? `scheduler lifetime ${Math.round(lifetime)}` : ''}` +
-      (med != null ? ` · median ${(med / 1000).toFixed(1)}s` : '') + `</div>`;
+      `<div class="name"><span class="chip" style="background:${color}"></span>${escapeHtml(name)}</div>` +
+      `<div class="stat-line"><span class="stat-label">requests now</span><span class="stat-val num">${count}</span></div>` +
+      `<div class="smeter"><div class="fill" style="width:${100 * count / maxCount}%;background:${color}"></div></div>` +
+      `<div class="stat-line"><span class="stat-label">median latency</span><span class="stat-val num">${med != null ? (med / 1000).toFixed(1) + 's' : '–'}</span></div>` +
+      `<div class="smeter lat"><div class="fill" style="width:${med != null ? 100 * med / maxMed : 0}%"></div></div>` +
+      `<div class="score-foot">${lifetime != null ? Math.round(lifetime) + ' routed this session' : ''}</div>`;
     board.appendChild(tile);
-  }
-}
-
-function renderRibbon(decisions) {
-  const ribbon = document.getElementById('ribbon');
-  const rows = decisions.slice(-80);
-  ribbon.innerHTML = '';
-  for (const d of rows) {
-    const name = shortName(d.served_by === 'unknown' ? null : d.served_by, lastEndpoints);
-    const tick = document.createElement('div');
-    tick.className = 'tick' + (d.ok ? '' : ' err');
-    tick.style.background = seriesColor.get(name) || FALLBACK;
-    tick.title = `${d.tag} → ${name}`;
-    ribbon.appendChild(tick);
   }
 }
 
@@ -973,65 +978,69 @@ function chosenHit(d) {
   return d.signals?.[name]?.prefix_hit_pct ?? null;
 }
 
-function renderInsights(decisions) {
-  const strip = document.getElementById('insight-strip');
-  const rows = decisions.filter(d => d.ok && (d.kind === 'loadgen' || d.kind === 'chat')).slice(-60);
-  const warm = [], cold = [];
-  let avoided = 0, comparable = 0, preserved = 0;
-  for (const d of rows) {
-    const hit = chosenHit(d);
-    if (hit == null) continue;
-    (hit >= 50 ? warm : cold).push(d.latency_ms);
-    if (d.rr_pick && d.signals?.[d.rr_pick]) {
-      comparable++;
-      const rrHit = d.signals[d.rr_pick].prefix_hit_pct ?? 0;
-      if (hit >= 50 && rrHit < 50) {
-        avoided++;
-        // conservative: only the chosen machine's *extra* cached share counts
-        if (d.prompt_tokens) preserved += d.prompt_tokens * Math.max(0, hit - rrHit) / 100;
-      }
-    }
-  }
-  const parts = [];
-  const wMed = median(warm), cMed = median(cold);
-  if (wMed != null && cMed != null && warm.length >= 3 && cold.length >= 3 && cMed > wMed) {
-    parts.push(`warm cache median <b>${(wMed / 1000).toFixed(1)}s</b> vs cold <b>${(cMed / 1000).toFixed(1)}s</b> — ` +
-      `${(cMed / wMed).toFixed(1)}× faster <span class="term" data-term="prefixhit">reusing work</span>`);
-  }
-  if (comparable >= 6 && avoided > 0) {
-    let s = `<b>${avoided}</b> of the last ${comparable} requests would have missed the warm cache under ` +
-      `<span class="term" data-term="roundrobin">round-robin</span>`;
-    if (preserved > 0) {
-      const pd = preserved * (PRICE_FRESH_PER_M - PRICE_CACHED_PER_M) / 1e6;
-      s += ` — ~<b>${fmtTokens(Math.round(preserved))}</b> reused tokens (≈${fmtDollars(pd)}) ` +
-        `preserved by routing <i>(est.)</i><button class="info-btn" data-info="routingvalue">i</button>`;
-    }
-    parts.push(s);
-  }
-  strip.innerHTML = parts.join('<span style="opacity:0.4">·</span>');
-}
-
-// standing "llm-d vs blind round-robin" scoreboard: for each recent request,
-// did the chosen worker land on a warm cache, and would round-robin's pick
-// have? The RR side is a counterfactual (that machine never ran it) — same
-// comparable set the insight strip trusts.
-function renderRrSplit(decisions) {
-  const box = document.getElementById('rr-split');
+// Head-to-head: llm-d vs blind round-robin on the SAME request stream. For each
+// comparable request we know the chosen worker's cache warmth (measured — it
+// ran there) and round-robin's counterfactual pick's warmth (est — that machine
+// never ran it). The two-lane tape shows both fates column-aligned; the score
+// and latency line summarize. Same comparable set the old strip trusted.
+function renderHeadToHead(decisions) {
+  const box = document.getElementById('h2h');
   if (!box) return;
   const rows = decisions.filter(d => d.ok && (d.kind === 'loadgen' || d.kind === 'chat')
     && d.rr_pick && d.signals?.[d.rr_pick]).slice(-40);
   if (rows.length < 6) { box.style.display = 'none'; return; }
-  let llmd = 0, rr = 0;
-  for (const d of rows) {
-    if ((chosenHit(d) ?? 0) >= 50) llmd++;
-    if ((d.signals[d.rr_pick].prefix_hit_pct ?? 0) >= 50) rr++;
-  }
-  const lp = Math.round(100 * llmd / rows.length), rp = Math.round(100 * rr / rows.length);
   box.style.display = '';
-  document.getElementById('rr-llmd').style.width = lp + '%';
-  document.getElementById('rr-rr').style.width = rp + '%';
-  document.getElementById('rr-llmd-v').textContent = lp + '%';
-  document.getElementById('rr-rr-v').textContent = rp + '%';
+
+  let llmdWarm = 0, rrWarm = 0, saved = 0, preserved = 0;
+  const warm = [], cold = [];
+  const tape = document.getElementById('tape');
+  tape.innerHTML = '';
+  for (const d of rows) {
+    const lHit = chosenHit(d) ?? 0;
+    const rHit = d.signals[d.rr_pick].prefix_hit_pct ?? 0;
+    const lWarm = lHit >= 50, rWarm = rHit >= 50;
+    if (lWarm) llmdWarm++;
+    if (rWarm) rrWarm++;
+    (lWarm ? warm : cold).push(d.latency_ms);
+    if (lWarm && !rWarm) {
+      saved++;
+      if (d.prompt_tokens) preserved += d.prompt_tokens * Math.max(0, lHit - rHit) / 100;
+    }
+    const chosen = shortName(d.served_by === 'unknown' ? null : d.served_by, lastEndpoints);
+    const lColor = seriesColor.get(chosen) || FALLBACK;
+    const rColor = seriesColor.get(d.rr_pick) || FALLBACK;
+    const col = document.createElement('div');
+    col.className = 'tcol' + (lWarm && !rWarm ? ' win' : '');
+    col.title = `${d.tag}: llm-d → ${chosen} (${Math.round(lHit)}% warm) · ` +
+      `round-robin → ${d.rr_pick} (${Math.round(rHit)}%, est)`;
+    col.innerHTML =
+      `<div class="tcell ${lWarm ? 'warm' : 'cold'}" style="--series:${lColor}"></div>` +
+      `<div class="tcell ${rWarm ? 'warm' : 'cold'}" style="--series:${rColor}"></div>`;
+    tape.appendChild(col);
+  }
+
+  const lp = Math.round(100 * llmdWarm / rows.length);
+  const rp = Math.round(100 * rrWarm / rows.length);
+  document.getElementById('h2h-llmd').textContent = lp + '%';
+  document.getElementById('h2h-rr').textContent = rp + '%';
+  const dEl = document.getElementById('h2h-delta'), dCap = document.getElementById('h2h-delta-cap');
+  if (rp === 0 && lp > 0) { dEl.textContent = 'warm'; dCap.textContent = 'vs none'; }
+  else if (lp > rp) { dEl.textContent = (lp / Math.max(1, rp)).toFixed(1) + '×'; dCap.textContent = 'more served warm'; }
+  else { dEl.textContent = '≈'; dCap.textContent = 'even so far'; }
+
+  // measured latency payoff — both sides are the REAL llm-d path split by warmth
+  const wMed = median(warm), cMed = median(cold);
+  const bits = [];
+  if (wMed != null && cMed != null && warm.length >= 3 && cold.length >= 3 && cMed > wMed) {
+    bits.push(`served warm in <b>${(wMed / 1000).toFixed(1)}s</b> vs <b>${(cMed / 1000).toFixed(1)}s</b> cold — ` +
+      `<b>${(cMed / wMed).toFixed(1)}× faster</b> <span class="tag-m">measured</span>`);
+  }
+  if (saved > 0 && preserved > 0) {
+    const pd = preserved * (PRICE_FRESH_PER_M - PRICE_CACHED_PER_M) / 1e6;
+    bits.push(`routing dodged a cold start on <b>${saved}</b> of ${rows.length} — ` +
+      `~${fmtTokens(Math.round(preserved))} tokens (≈${fmtDollars(pd)}) not recomputed <span class="tag-e">est</span>`);
+  }
+  document.getElementById('h2h-latency').innerHTML = bits.join('<span class="latsep">·</span>');
 }
 
 function renderDecisions(decisions, epp) {
@@ -1071,7 +1080,8 @@ function renderDecisions(decisions, epp) {
       <td class="mono"><span class="chev">▸</span></td>
       <td class="mono num">${t}</td>
       <td class="mono">${escapeHtml(d.tag)}</td>
-      <td><span class="served"><span class="chip" style="background:${color};width:10px;height:10px;border-radius:3px"></span>${escapeHtml(name)}</span></td>
+      <td><span class="served"><span class="chip" style="background:${color};width:10px;height:10px;border-radius:3px"></span>${escapeHtml(name)}</span>` +
+        (d.rr_pick && d.rr_pick !== name ? `<span class="rr-ghost" title="a blind round-robin balancer would have picked this">rr→${escapeHtml(d.rr_pick)}</span>` : '') + `</td>
       <td class="mono num">${d.ok ? fmt(d.latency_ms) + ' ms' : 'error'}</td>`;
     tr.onclick = () => {
       openRows.has(d.id) ? openRows.delete(d.id) : openRows.add(d.id);
@@ -1087,7 +1097,6 @@ function renderDecisions(decisions, epp) {
   }
 
   renderScoreboard(rows, epp);
-  renderRibbon(decisions);
 }
 
 /* ---------- demo beats ---------- */
@@ -1413,8 +1422,7 @@ async function refresh() {
   renderSavings(state);
   renderPoolFile(state, epp);
   renderDecisions(dec.decisions, epp);
-  renderInsights(dec.decisions);
-  renderRrSplit(dec.decisions);
+  renderHeadToHead(dec.decisions);
   updateBeatCaptions(dec.decisions);
   updateOffloadBeat(dec.decisions);
   renderPresenter(state, epp, dec.decisions);
