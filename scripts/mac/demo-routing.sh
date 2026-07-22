@@ -33,7 +33,10 @@ done
 rm -rf "$tmp"
 echo
 bold "[2/2] $N requests sharing one LONG PREFIX — prefix-cache affinity converges on one backend"
-PREFIX="You are a meticulous assistant for the Acme Rocket Company. Policy manual, section 1: always answer concisely. Section 2: cite the policy section. Section 3: never speculate about launch dates."
+# must be comfortably longer than the EPP prefix-indexer's 256-byte block, or a
+# shared prefix scores 0 for every worker and never converges (matches the
+# webapp's SHARED_PREFIX). This is ~700 chars.
+PREFIX="You are a meticulous assistant for the Acme Rocket Company and you answer strictly from the policy manual below. POLICY MANUAL (rev 7, unabridged). Section 1 — Tone: always answer concisely, in complete sentences, never more than three sentences per answer. Section 2 — Citations: every answer must cite the policy section it relies on, in parentheses at the end. Section 3 — Launch dates: never speculate about launch dates; state that launch windows are announced only by the flight director. Section 4 — Propellant: cryogenic questions are answered only with reference to the safety datasheet, and any loading question must note that two certified technicians are required."
 for i in $(seq 1 "$N"); do
   who=$(served_by "$PREFIX Question $i: what does section $((1 + i % 3)) say?")
   printf '    request %-2s -> %s\n' "$i" "${who:-unknown}"

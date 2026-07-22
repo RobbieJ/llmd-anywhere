@@ -119,8 +119,10 @@ def _signals() -> dict:
     return out
 
 
-def _pick(mode: str, i: int) -> dict:
+def _pick(mode: str, i: int) -> dict | None:
     active = [w for w in WORKERS if not w.get("disabled")] or WORKERS
+    if not active:
+        return None                         # empty pool — caller no-ops the burst
     if mode == "shared":
         return next((w for w in active if w["name"] == _warm_worker), active[0])
     # unique: spread, lightly favouring the shorter queue
@@ -199,6 +201,8 @@ async def _one(worker: dict, tag: str, kind: str, record) -> None:
 
 
 async def loadgen(n: int, mode: str, record) -> None:
+    if not [w for w in WORKERS if not w.get("disabled")]:
+        return                              # empty/all-drained pool — nothing to route
     if mode == "offload":
         # simulate fill/evict/replay against the offload-enabled worker
         worker = WORKERS[0]

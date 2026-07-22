@@ -788,6 +788,23 @@ def _pool_response(warning: str | None = None) -> dict:
     return out
 
 
+async def _commit_pool(new_lines: list[str], prev_lines: list[str]) -> str | None:
+    """Write the new pool.txt and regenerate endpoints.yaml. If the generator
+    refuses (e.g. the change would leave zero live workers), roll pool.txt back
+    so the file never diverges from what the scheduler actually routes on, and
+    return a human-readable warning."""
+    _write_pool(new_lines)
+    rc, gen_err = await _regen_endpoints()
+    if rc:
+        _write_pool(prev_lines)
+        # log the generator's own words for the operator; return a clean,
+        # JSON-safe message for the UI toast (stderr can carry control chars)
+        if gen_err:
+            print(f"[pool] change rejected by gen-endpoints: {gen_err}", flush=True)
+        return "Change kept out — it would leave the pool with no reachable workers."
+    return None
+
+
 async def _detect_device(ep: str) -> str:
     """Best-effort device label from the worker's model id, so a non-Apple
     machine isn't silently mislabeled when the user leaves 'Auto-detect'."""
@@ -817,11 +834,11 @@ async def pool_add(req: Request):
     if not device:                          # 'Auto-detect' → derive from the worker
         device = _sanitize_device(await _detect_device(ep))
     async with _pool_lock:
-        lines = [l for l in _pool_lines() if _line_ep(l) != ep]
+        prev = _pool_lines()
+        lines = [l for l in prev if _line_ep(l) != ep]
         lines.append(f"{ep}|{device}")
-        _write_pool(lines)
-        rc, gen_err = await _regen_endpoints()
-    return JSONResponse(_pool_response(gen_err if rc else None))
+        warn = await _commit_pool(lines, prev)
+    return JSONResponse(_pool_response(warn))
 
 
 @app.post("/api/pool/remove")
@@ -833,10 +850,10 @@ async def pool_remove(req: Request):
     if MOCK:
         return JSONResponse(mock.pool_remove(ep))
     async with _pool_lock:
-        lines = [l for l in _pool_lines() if _line_ep(l) != ep]
-        _write_pool(lines)
-        rc, gen_err = await _regen_endpoints()
-    return JSONResponse(_pool_response(gen_err if rc else None))
+        prev = _pool_lines()
+        lines = [l for l in prev if _line_ep(l) != ep]
+        warn = await _commit_pool(lines, prev)
+    return JSONResponse(_pool_response(warn))
 
 
 @app.post("/api/pool/disable")
@@ -850,16 +867,16 @@ async def pool_disable(req: Request):
     if MOCK:
         return JSONResponse(mock.pool_disable(ep, disabled))
     async with _pool_lock:
+        prev = _pool_lines()
         out = []
-        for l in _pool_lines():
+        for l in prev:
             if _line_ep(l) == ep:
                 bare = l.lstrip()[1:].lstrip() if l.lstrip().startswith("#") else l
                 out.append(f"# {bare}" if disabled else bare)
             else:
                 out.append(l)
-        _write_pool(out)
-        rc, gen_err = await _regen_endpoints()
-    return JSONResponse(_pool_response(gen_err if rc else None))
+        warn = await _commit_pool(out, prev)
+    return JSONResponse(_pool_response(warn))
 
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")

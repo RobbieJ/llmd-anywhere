@@ -29,14 +29,21 @@ and the official [no-kubernetes-deployment guide](https://github.com/llm-d/llm-d
 
 | Tier | Hardware | What you get |
 |---|---|---|
-| **Zero** | Any machine | `MOCK=1` — the full dashboard with a simulated pool. No Docker, no GPUs. |
-| **One Mac** | 1× Apple Silicon Mac (16 GB+) | Real llm-d routing across **two Metal vLLM workers on the same Mac**. All demo beats work. |
+| **Zero** | Any machine | `./demo mock` — the full dashboard with a simulated pool. No Docker, no GPUs. Try this first. |
+| **One Mac** | 1× Apple Silicon Mac (24 GB+) | Real llm-d routing across **two Metal vLLM workers on the same Mac**. Every beat except Overflow (Beat 4 needs a discrete-GPU worker). |
 | **Two+ Macs** | Apple Silicon Macs on one LAN | Real network routing across machines. |
 | **Heterogeneous** | + any NVIDIA box (Linux / WSL2 / DGX) | The "one scheduler, very different accelerators" story. |
 
-Hub prerequisites: Docker (Desktop or colima), Python 3.12, Xcode CLT
-(vllm-metal builds from source on first install). Everything else is
-installed by the scripts.
+**Hub prerequisites** (for `./demo up`): Docker **running** (Desktop or colima),
+Python 3.12, Xcode CLT (vllm-metal builds from source on first install), and a
+network connection on first run. `./demo doctor` checks all of these and
+refuses to start if a blocker is present. Everything else is installed by the
+scripts. First `up` downloads a 4-bit Qwen model (~1–5 GB depending on RAM),
+cached after that.
+
+> **Zero-hardware needs almost nothing:** `./demo mock` only needs Python 3.12
+> and internet on the first run (to `pip install` four small packages into a
+> venv). No Docker, no GPU, no model download.
 
 ## Quickstart
 
@@ -46,8 +53,10 @@ installed by the scripts.
 ./demo mock     # → http://localhost:7080 — simulated pool, no Docker, no GPUs
 ```
 
-(Or by hand, e.g. on Windows without WSL:
-`pip install -r webapp/requirements.txt` then `MOCK=1 python webapp/server.py`.)
+(Or by hand — create a venv first, since modern Python installs block a bare
+`pip install`:
+`python3 -m venv .venv && .venv/bin/pip install -r webapp/requirements.txt`
+then `MOCK=1 .venv/bin/python webapp/server.py`.)
 
 ### One Mac (the real thing)
 
@@ -58,10 +67,22 @@ installed by the scripts.
 That runs preflight checks, starts Envoy + the llm-d Endpoint Picker in
 Docker, installs vllm-metal (first run only — it builds vLLM, go get coffee),
 starts **two** Metal workers with a safe memory split, writes the pool file,
-and launches the dashboard. It prints the URL when ready.
+and launches the dashboard. It prints the URL only once the dashboard actually
+answers.
 
 > **First model load and API startup can take several minutes.** The scripts
-> wait and say so — a quiet log is not a hang.
+> wait, print an elapsed-time heartbeat, and give up after 20 minutes rather
+> than hang forever — a quiet log in between is not a hang.
+
+**You're up when:** both status pills at the top of the dashboard (gateway,
+endpoint picker) are green, and a beat button produces coloured dots flying to
+a worker. From the terminal, `./demo status` shows the same, and `./demo smoke`
+sends one real request through the gateway and prints which worker served it —
+the fastest confirmation that routing works.
+
+To start over from a clean slate: `./demo reset` (stops everything and clears
+the pool/generated files; leaves the multi-GB model cache and vllm-metal venv
+in place).
 
 ### Add more machines
 
@@ -84,11 +105,31 @@ any `vllm serve` with `--served-model-name llmd-demo` bound to `0.0.0.0`
 
 Addresses must be **literal IPv4** — the file-discovery plugin deliberately
 does not resolve hostnames. Workers must be reachable from the hub's Docker
-containers, so use LAN IPs, not `127.0.0.1`.
+containers, so use LAN IPs, not `127.0.0.1`. (On colima or other non–Docker
+Desktop runtimes, confirm the container can reach the hub's LAN IP — the EPP
+scrapes each worker's `/metrics` from *inside* the container, not from the
+host.)
+
+### One alias, many machines
+
+Every worker must serve under the **same** model name — the pool alias, default
+`llmd-demo` (set with vLLM's `--served-model-name`). The dashboard and beats
+send requests for exactly that name, and the scheduler may route a request to
+*any* worker, so a worker serving under a different name **returns 404 for
+every request routed to it — while still showing healthy** on the dashboard
+(it answers `/health` and `/metrics`). If you override `SERVED_NAME` on the
+hub, set the identical `--served-model-name` on every worker. `./demo smoke`
+catches a mismatch immediately. (The real weights behind the alias *can* differ
+per machine — that's the heterogeneous-hardware story — but the served **name**
+must match everywhere.)
 
 > **Network note:** by design, everything here binds `0.0.0.0` with no
 > authentication — the gateway (8080), the workers (8001+), and the dashboard
-> (7080) are open to anyone on your network. Run it on a LAN you trust.
+> (7080) are open to anyone on your network. The dashboard's pool controls are
+> *mutating* (they add/remove workers and can make the server probe LAN
+> addresses you type), so treat 7080 as trusted-LAN-only: never expose it, the
+> gateway, or the workers to an untrusted network or the internet. Run the
+> whole thing on a LAN you trust.
 
 ## ⚠️ Metal memory safety (read this once)
 
@@ -106,19 +147,27 @@ the budget doesn't fit free memory. Don't bypass them with a bare
 See [docs/stage-script.md](docs/stage-script.md) for the full talk track.
 
 1. **Spread** — 12 unique prompts fan out across workers (load-aware scoring;
-   watch the animated dots alternate).
+   watch the animated dots alternate). Hollow dots = fresh work.
 2. **Converge** — 12 prompts sharing one long prefix pin to a single worker
-   (prefix-cache affinity; watch the "tokens never recomputed" and dollar
-   counters climb).
-3. **Reshape the pool** — `./demo pool add|remove` while traffic flows; the
-   topology reshapes live. *The cluster is a file.*
-4. **Overflow** (needs an offload-enabled worker) — 8 big documents overflow a
+   (prefix-cache affinity; the dots turn solid, and the "tokens never
+   recomputed" and dollar counters climb).
+3. **RAG workload** — one long document, 30 questions about it. After the first
+   warms the cache, every question reuses it, so the reuse counters and the
+   winning worker's "work never redone" bar climb *steadily* for the whole run
+   — the payoff of prefix-cache-aware routing at scale.
+4. **Reshape the pool** — do it **from the dashboard**: each machine card has a
+   ⏻ drain (reversible) and ✕ remove, and *＋ add machine* joins one live. The
+   topology and ready-count reshape within a poll. *The cluster is a text file
+   — and you're editing it from the browser.* (`./demo pool add|remove` still
+   works from a terminal.)
+5. **Overflow** (needs an offload-enabled worker) — 8 big documents overflow a
    deliberately small GPU KV tier and spill into vLLM's offload buffer; replay
    them and watch "restored from offload" climb instead of recompute. Enable on
    a CUDA worker with `OFFLOAD_GB=16 NUM_GPU_BLOCKS=2048` (see
-   `scripts/spark/start-vllm.sh`); unified-memory machines can't host this one
-   (see troubleshooting).
-5. **A sticky conversation** (encore) — chat a few turns: the memory line names
+   `scripts/spark/start-vllm.sh`); the button stays greyed out otherwise, so
+   unified-memory-only pools (all-Mac, DGX Spark) skip this one (see
+   troubleshooting).
+6. **A sticky conversation** (encore) — chat a few turns: the memory line names
    the worker holding the conversation's KV cache, every turn lands there, and
    *Clear memory* frees the scheduler again. Every chat rides a system prompt
    (as real apps do) — that's what pushes each conversation's prefix past the
@@ -136,16 +185,19 @@ event for the room.
 your app ──► Envoy :8080 ──► chosen worker (vLLM)
                 │  ext_proc (gRPC)
                 ▼
-        Endpoint Picker :9002 ◄── config/endpoints.yaml  (watchFile)
+        Endpoint Picker  ◄── config/endpoints.yaml  (watchFile)
                 └── scrapes each worker's /metrics
 ```
+
+Only `:8080` (gateway) and `:9090` (EPP metrics, scraped by the dashboard) are
+published to the host; the EPP's gRPC port is internal to the compose network.
 
 - **EPP (Endpoint Picker)** — llm-d's scheduler
   (`ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0`, multi-arch). Discovers
   workers from `config/endpoints.yaml` (file-discovery plugin — no Kubernetes
-  `InferencePool`), scrapes vLLM metrics, and scores every request:
-  `2× queue + 2× kv-cache + 3× prefix-cache + 2× no-hit-lru → max-score-picker`
-  (see `config/epp-config.yaml`).
+  `InferencePool`), scrapes vLLM metrics, and scores every request —
+  `2× queue + 2× kv-cache + 3× prefix-cache + 2× no-hit-lru`, highest weighted
+  score wins (see `config/epp-config.yaml`).
 - **Envoy** — asks the EPP where to send each request (ext_proc), forwards via
   `ORIGINAL_DST`, and echoes `x-llmd-served-by` on responses so the dashboard
   can attribute every decision.
@@ -157,7 +209,7 @@ your app ──► Envoy :8080 ──► chosen worker (vLLM)
 ## Repo layout
 
 ```
-demo                   # the CLI: up / mock / worker / pool / status / down / doctor
+demo                   # the CLI: up / mock / worker / pool / status / smoke / down / reset / doctor
 config/
   pool.txt             # pool membership: ip:port|device  (yours; gitignored)
   endpoints.yaml       # generated — what the EPP actually reads
@@ -177,9 +229,17 @@ docs/                  # stage script
 - **Worker "hangs" after the engine loads** → vllm-metal's API server can take
   minutes to register routes on some machines. It's not stuck; the health wait
   covers it.
+- **A worker shows healthy but every request to it fails (404)** → it's serving
+  under a different model name than the pool alias. Every worker must use
+  `--served-model-name llmd-demo` (or whatever your `SERVED_NAME` is). Run
+  `./demo smoke` to confirm; see "One alias, many machines" above.
 - **A worker gets traffic but every request fails** → it's listed in
   `endpoints.yaml` but dead. Rerun `./demo pool list` / `gen-endpoints.sh` —
   they only write live workers.
+- **Start over / clear a stale pool** → `./demo reset` stops everything and
+  clears `pool.txt` + generated files. (Plain `./demo down` deliberately keeps
+  the pool so `up` resumes it; a leftover `pool.txt` makes `up` skip starting
+  local workers.)
 - **EPP decisions** → `docker logs -f llmd-epp`. The
   "TPOT calculation" errors on non-streaming requests are cosmetic.
 - **Identical prompts all hit one worker** → that's prefix-cache affinity

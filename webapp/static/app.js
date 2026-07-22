@@ -1398,5 +1398,16 @@ async function poolMutate(path, body) {
   const data = await r.json().catch(() => ({}));
   try { await refresh(); } catch { /* next tick */ }
   if (!r.ok) throw new Error(data.error || 'pool change failed');
+  if (data.warning) showToast(data.warning);   // e.g. can't remove the last live worker
   return data;
+}
+
+let toastTimer = null;
+function showToast(msg) {
+  let t = document.getElementById('toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 4000);
 }

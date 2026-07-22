@@ -8,11 +8,15 @@
 #   ./demo pool remove <ip:port>
 #   ./demo pool list
 #   ./demo status                   what's running, where
+#   ./demo smoke                    one real request through the gateway → who served it
 #   ./demo down                     stop everything on this machine
+#   ./demo reset                    down + clear pool/endpoints/run state (keeps model cache)
 #   ./demo doctor                   preflight checks
 #
-# Knobs (env): SERVED_NAME (default llmd-demo) · WORKERS (local workers on
-# `up`, default 2) · MODEL (override auto RAM-based choice) · WEBAPP_PORT (7080)
+# Knobs (env): SERVED_NAME (alias every worker serves, default llmd-demo) ·
+# WORKERS (local workers on `up`, default 2) · MODEL (override auto RAM choice) ·
+# WEBAPP_PORT (7080) · BASE_PORT (first worker port, 8001) · FRACTION (Metal
+# memory fraction for `worker`/manual start.sh; `up` auto-splits its own)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,42 +46,94 @@ my_device() {
   fi
 }
 
+# is the Docker daemon actually reachable (not just the CLI installed)?
+docker_up() { docker info >/dev/null 2>&1; }
+
+# poll an HTTP endpoint until it answers or we time out (seconds)
+wait_http() {
+  local url="$1" secs="${2:-15}" i=0
+  while (( i < secs * 2 )); do
+    curl -sf -m 2 "$url" >/dev/null 2>&1 && return 0
+    sleep 0.5; i=$((i + 1))
+  done
+  return 1
+}
+
 # --------------------------------------------------------------------- doctor
+# Returns non-zero if a HARD blocker is present (no Docker daemon, Intel Mac).
+# cmd_up consults this and refuses rather than half-starting.
 cmd_doctor() {
-  local ok=0
+  local hard=0
   say "doctor"
-  [[ "$(uname -m)" == "arm64" || "$(uname)" != "Darwin" ]] && echo "  ✓ architecture: $(uname -m)" \
-    || { warn "Intel Mac detected — vllm-metal needs Apple Silicon"; ok=1; }
-  command -v docker >/dev/null && echo "  ✓ docker" || { warn "docker not found (Docker Desktop or colima required on the hub)"; ok=1; }
-  command -v python3 >/dev/null && echo "  ✓ python3 ($(python3 -V 2>&1 | cut -d' ' -f2))" || { warn "python3 not found"; ok=1; }
+
+  # architecture (hard blocker on an Intel Mac — vllm-metal needs Apple GPU)
+  if [[ "$(uname)" == "Darwin" && "$(uname -m)" != "arm64" ]]; then
+    warn "Intel Mac ($(uname -m)) — vllm-metal needs Apple Silicon. MOCK mode still works: ./demo mock"
+    hard=1
+  else
+    echo "  ✓ architecture: $(uname -m)"
+  fi
+
+  # Docker daemon must be RUNNING, not just installed (the routing plane is containers)
+  if docker_up; then
+    echo "  ✓ docker daemon ($(docker compose version --short 2>/dev/null || echo 'compose v2') )"
+  else
+    warn "Docker daemon not reachable — start Docker Desktop / colima before ./demo up (not needed for ./demo mock)"
+    hard=1
+  fi
+
+  # python3 (webapp venv + mock)
+  if command -v python3 >/dev/null; then
+    echo "  ✓ python3 ($(python3 -V 2>&1 | cut -d' ' -f2))"
+  else
+    warn "python3 not found — needed for the dashboard and mock mode"
+    hard=1
+  fi
+
+  # Xcode CLT (only needed to BUILD vllm-metal on a Mac; not for mock)
+  if [[ "$(uname)" == "Darwin" ]]; then
+    if xcode-select -p >/dev/null 2>&1; then
+      echo "  ✓ xcode command-line tools"
+    else
+      warn "Xcode CLT missing (needed to build vllm-metal) — run: xcode-select --install"
+    fi
+    local free mem_gb
+    free=$(memory_pressure 2>/dev/null | awk -F': ' '/free percentage/{gsub(/%/,"",$2); print int($2)}')
+    mem_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+    echo "  ✓ memory: ${mem_gb}GB total, ${free:-?}% free"
+    (( ${free:-100} < 35 )) && warn "less than 35% memory free — close some apps before starting workers"
+  fi
+
   local ip; ip=$(my_ip)
   [[ -n "$ip" ]] && echo "  ✓ LAN address: $ip" \
-    || { warn "no LAN IPv4 on en0/en1 — the scheduler container reaches workers by LAN IP"; ok=1; }
-  if [[ "$(uname)" == "Darwin" ]]; then
-    local free; free=$(memory_pressure 2>/dev/null | awk -F': ' '/free percentage/{gsub(/%/,"",$2); print int($2)}')
-    local mem_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
-    echo "  ✓ memory: ${mem_gb}GB total, ${free:-?}% free"
-    [[ "${free:-100}" -lt 35 ]] && warn "less than 35% memory free — close some apps before starting workers"
-  fi
+    || warn "no LAN IPv4 — the scheduler container reaches workers by LAN IP; connect to a network"
+
   for p in 8080 9090 "$WEBAPP_PORT"; do
-    if lsof -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then echo "  · port $p already in use (fine if it's this demo)"; fi
+    lsof -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 && echo "  · port $p already in use (fine if it's this demo; otherwise stop the other process)"
   done
-  return $ok
+  return $hard
 }
 
 # --------------------------------------------------------------------- worker
 start_local_workers() {
-  local n="$1" ip="$2"
+  local n="$1" ip="$2" started=0
   # split a safe overall budget across local workers
   local fraction
   fraction=$(python3 -c "print(round(min(0.25, 0.25 / $n) if $n <= 1 else round(0.24 / $n, 2), 2))")
   for i in $(seq 0 $((n - 1))); do
     local port=$((BASE_PORT + i))
     say "local worker $((i + 1))/$n on :$port (memory fraction $fraction)"
-    SERVED_NAME="$SERVED_NAME" PORT="$port" FRACTION="$fraction" ${MODEL:+MODEL="$MODEL"} \
-      "$ROOT/macvllm/start.sh"
-    pool_add_entry "$ip:$port" "$(my_device)"
+    # don't let a worker's memory-safety refusal abort the whole `up` (the
+    # routing plane is already running) — warn and keep going
+    if SERVED_NAME="$SERVED_NAME" PORT="$port" FRACTION="$fraction" ${MODEL:+MODEL="$MODEL"} \
+        "$ROOT/macvllm/start.sh"; then
+      pool_add_entry "$ip:$port" "$(my_device)"
+      started=$((started + 1))
+    else
+      warn "worker on :$port did not start (see message above) — continuing with $started worker(s)"
+    fi
   done
+  (( started > 0 )) || warn "no local workers started — the dashboard will come up empty; free memory and run './demo worker', or use './demo mock'"
 }
 
 cmd_worker() {
@@ -123,9 +179,10 @@ cmd_pool() {
 start_webapp() {
   mkdir -p "$RUN"
   if [[ ! -x "$RUN/venv/bin/python" ]]; then
-    say "creating webapp venv"
-    python3 -m venv "$RUN/venv"
-    "$RUN/venv/bin/pip" -q install -r "$ROOT/webapp/requirements.txt"
+    say "creating webapp venv (first run installs a few Python packages — needs internet)"
+    python3 -m venv "$RUN/venv" || die "could not create a venv — is a working python3 installed?"
+    "$RUN/venv/bin/pip" -q install -r "$ROOT/webapp/requirements.txt" \
+      || { rm -rf "$RUN/venv"; die "pip install failed (offline? proxy?). Fix connectivity and rerun."; }
   fi
   if [[ -f "$RUN/webapp.pid" ]] && kill -0 "$(cat "$RUN/webapp.pid")" 2>/dev/null; then
     echo "    webapp already running (pid $(cat "$RUN/webapp.pid"))"
@@ -133,21 +190,33 @@ start_webapp() {
     ( cd "$ROOT/webapp" && MODEL_NAME="$SERVED_NAME" WEBAPP_PORT="$WEBAPP_PORT" MOCK="${MOCK:-}" \
         nohup "$RUN/venv/bin/python" server.py > "$RUN/webapp.log" 2>&1 & echo $! > "$RUN/webapp.pid" )
   fi
+  # don't claim success until it actually answers
+  if ! wait_http "http://127.0.0.1:$WEBAPP_PORT/" 15; then
+    warn "dashboard didn't answer on :$WEBAPP_PORT — last log lines:"
+    tail -n 15 "$RUN/webapp.log" >&2 2>/dev/null || true
+    die "dashboard failed to start (full log: $RUN/webapp.log)"
+  fi
 }
 
 cmd_mock() {
-  say "dashboard (simulated pool — no Docker, no GPUs)"
+  say "dashboard (simulated pool — no Docker, no GPUs; first run needs internet for a small pip install)"
   MOCK=1 start_webapp
   echo
-  say "mock dashboard: http://localhost:$WEBAPP_PORT   (stop with ./demo down)"
+  say "mock dashboard is up → http://localhost:$WEBAPP_PORT   (stop with ./demo down)"
 }
 
 cmd_up() {
-  cmd_doctor || true
+  if ! cmd_doctor; then
+    die "preflight found a blocker (above). Fix it — or run the zero-hardware demo: ./demo mock"
+  fi
   local ip; ip=$(my_ip); [[ -n "$ip" ]] || die "no LAN IP — connect to a network first"
 
+  # give the EPP a well-formed file to watch before it starts, so a fresh clone
+  # (no endpoints.yaml yet) doesn't log file-not-found until the first worker joins
+  [[ -f "$ROOT/config/endpoints.yaml" ]] || printf 'endpoints: []\n' > "$ROOT/config/endpoints.yaml"
+
   say "routing plane (Envoy gateway + llm-d endpoint picker, docker)"
-  ( cd "$ROOT" && docker compose up -d )
+  ( cd "$ROOT" && docker compose up -d ) || die "docker compose failed — is the Docker daemon running?"
 
   if [[ "$(uname)" == "Darwin" ]]; then
     [[ -x "${VLLM_METAL_VENV:-$HOME/.venv-vllm-metal}/bin/vllm" ]] || {
@@ -187,6 +256,16 @@ cmd_down() {
   say "down (pool.txt kept; endpoints.yaml will regenerate on next up)"
 }
 
+cmd_reset() {
+  cmd_down
+  say "clearing demo state (pool + generated endpoints + run dir)"
+  rm -f "$POOL_FILE" "$ROOT/config/endpoints.yaml"
+  rm -rf "$RUN"
+  say "reset. Big caches were NOT touched:"
+  echo "    vllm-metal venv : ${VLLM_METAL_VENV:-$HOME/.venv-vllm-metal}  (rm -rf to reclaim ~1.5GB)"
+  echo "    model cache      : ~/.cache/huggingface                       (several GB)"
+}
+
 cmd_status() {
   local ip; ip=$(my_ip)
   say "routing plane"; ( cd "$ROOT" && docker compose ps --format 'table {{.Name}}\t{{.Status}}' 2>/dev/null ) | sed 's/^/    /'
@@ -194,14 +273,33 @@ cmd_status() {
   cmd_pool list
 }
 
+# end-to-end smoke test: one real request through the gateway, print who served it
+cmd_smoke() {
+  local gw="http://127.0.0.1:8080"
+  say "smoke: one chat completion through the gateway ($gw)"
+  local served
+  served=$(curl -s -m 30 -o /dev/null -D - "$gw/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$SERVED_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8}" \
+    | tr -d '\r' | awk -F': ' 'tolower($1)=="x-llmd-served-by"{print $2}')
+  if [[ -n "$served" ]]; then
+    say "✓ routing works — served by $served"
+  else
+    warn "no worker answered. Check: workers healthy (./demo status), and every worker serves --served-model-name $SERVED_NAME"
+    return 1
+  fi
+}
+
 # ----------------------------------------------------------------------- main
 case "${1:-}" in
   up)     cmd_up ;;
   mock)   cmd_mock ;;
   down)   cmd_down ;;
+  reset)  cmd_reset ;;
+  smoke)  cmd_smoke ;;
   worker) shift; cmd_worker "$@" ;;
   pool)   shift; cmd_pool "$@" ;;
   status) cmd_status ;;
   doctor) cmd_doctor ;;
-  *)      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)      sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

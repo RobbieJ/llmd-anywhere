@@ -6,7 +6,8 @@
 #
 # Requirements: Apple Silicon, native arm64 Python 3.12, Xcode CLT.
 # The official installer builds vllm core from source (takes a while) and
-# installs everything into ~/.venv-vllm-metal (override: VENV_HINT below).
+# installs everything into ~/.venv-vllm-metal (override with the VLLM_METAL_VENV
+# env var — see VENV below).
 set -euo pipefail
 
 VENV="${VLLM_METAL_VENV:-$HOME/.venv-vllm-metal}"

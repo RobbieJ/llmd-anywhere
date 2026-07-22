@@ -72,14 +72,23 @@ echo $! > "$pidfile"
 
 echo ">>> Waiting for health (first run downloads the model; API startup can take"
 echo "    several minutes even after the engine loads — that is normal)..."
+MAX_WAIT="${MAX_WAIT:-1200}"   # give up after 20 min so a real hang isn't forever
+waited=0
 until curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; do
   if ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
     echo "!!! vLLM died — last log lines:"; tail -n 20 "$log"; exit 1
   fi
-  sleep 3
+  if (( waited >= MAX_WAIT )); then
+    echo "!!! still not healthy after $((MAX_WAIT / 60)) min — likely a stuck model download or network issue."
+    echo "    Check the log: $log   (last lines:)"; tail -n 15 "$log"; exit 1
+  fi
+  if (( waited > 0 && waited % 60 == 0 )); then
+    echo "    …still starting ($((waited / 60))m elapsed) — last log line: $(tail -n 1 "$log" 2>/dev/null)"
+  fi
+  sleep 5; waited=$((waited + 5))
 done
 
 device=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
-ip=$(ipconfig getifaddr en0 2>/dev/null || echo "<this-mac-ip>")
+ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this-mac-ip>")
 echo ">>> Healthy on :$PORT. Join it to the pool from the hub machine:"
 echo "    ./demo pool add $ip:$PORT \"$device · Metal\""
