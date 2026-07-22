@@ -121,11 +121,16 @@ const INFO = {
     <b>②</b> The scheduler checks every machine's queue, memory and reusable work — and picks one &nbsp;
     <b>③</b> The answer streams back; the coloured badge shows which machine wrote it</p>`,
   machines: `<h4>The machines</h4>
-    <p>Very different hardware, one service — for example a desktop AI box and a laptop's own
-    graphics chip, answering behind a single address. Each card shows live stats scraped from the
-    machine's own <span class="term" data-term="vllm">vLLM</span> metrics.</p>
-    <p>The memory bar's <i>length</i> is that machine's share of the pool's total
-    <span class="term" data-term="kv">KV cache</span> capacity — some tanks really are ~5× bigger.</p>`,
+    <p><span class="lead">What ·</span> Every worker in the pool, with live stats scraped from its own
+    <span class="term" data-term="vllm">vLLM</span> metrics — the real model it runs, how many
+    requests it's answering now, and its <span class="term" data-term="kv">KV cache</span> use.</p>
+    <p><span class="lead">Why ·</span> The point of llm-d is one service across very different hardware
+    — a desktop AI box and a laptop's graphics chip answer behind a single address. The cards show the
+    real weights behind each, so a heterogeneous pool is visible even though every worker answers to
+    one shared model name.</p>
+    <p><span class="lead">How ·</span> The memory bar's <i>length</i> is that machine's share of the
+    pool's total KV-cache capacity — some tanks are ~5× bigger. Cards appear and vanish as the pool
+    file changes.</p>`,
   workersavings: `<h4>Work this machine never redid</h4>
     <p>Of all the prompt text this machine has ever been asked to read, the coloured share was
     already sitting in its <span class="term" data-term="kv">KV cache</span> — served as a lookup
@@ -145,47 +150,83 @@ const INFO = {
     extra share the chosen machine had cached, priced at the cached-token gap. It is labelled an
     estimate because the counterfactual machine never actually ran the request.</p>`,
   scheduling: `<h4>Scheduling</h4>
-    <p>Every request is scored against each machine's live stats — no blind turn-taking
-    (<span class="term" data-term="roundrobin">round-robin</span>). Watch the dots: each one is a real
-    request consulting the scheduler and flying to the machine that won.</p>
-    <p>A <span class="term" data-term="cachemiss">cache miss</span> means redoing all the work on a
-    prompt's shared beginning; a hit turns it into a lookup. That's why "most reusable work" carries
-    the highest weight.</p>
-    <p>llm-d benchmarks: 3× throughput, 2× faster first response vs round-robin ·
+    <p><span class="lead">What ·</span> Every request is scored against each machine's live stats and
+    flies to the winner — each dot is a real request consulting the scheduler. No blind turn-taking
+    (<span class="term" data-term="roundrobin">round-robin</span>).</p>
+    <p><span class="lead">Why ·</span> A <span class="term" data-term="cachemiss">cache miss</span>
+    means redoing all the work on a prompt's shared beginning; a hit turns it into a lookup. So "most
+    reusable work" carries the highest weight (3×), above short queue (2×), free memory (2×) and
+    spreading cold prompts off hot caches (2×).</p>
+    <p><span class="lead">How ·</span> The scheduler (llm-d's Endpoint Picker) scrapes each worker's
+    vLLM metrics, scores them per request, and hands the pick to the gateway. llm-d benchmarks:
+    3× throughput, 2× faster first response vs round-robin ·
     <a href="https://github.com/llm-d/llm-d">github.com/llm-d</a></p>`,
   savings: `<h4>What the cache is worth</h4>
-    <p>Commercial AI APIs charge ~10× less for prompt tokens served from cache — typical list prices
-    are $3.00 per million fresh vs $0.30 cached — because the provider skips the compute.</p>
-    <p>This figure prices the pool's reused tokens at that gap. The same economics apply on your own
-    hardware: reused work is capacity you get back.</p>`,
+    <p><span class="lead">What ·</span> The pool's reused prompt tokens — served from cache instead of
+    recomputed — counted, and priced in dollars.</p>
+    <p><span class="lead">Why ·</span> Commercial AI APIs charge ~10× less for cached input (typically
+    $3.00 per million fresh vs $0.30 cached) because the provider skips the compute. The same
+    economics apply on your own hardware: reused work is capacity — and latency — you get back.</p>
+    <p><span class="lead">How ·</span> Summed from every worker's own vLLM counter
+    (<code>prompt_tokens_by_source</code>) and priced at that gap. Each machine's "work never redone"
+    bar adds up to this pool figure.</p>`,
   beat1: `<h4>Beat 1 · Spread</h4>
-    <p>12 different questions — nothing is reusable between them, so the scheduler spreads them
-    across machines to keep every line short. Expect an even split.</p>`,
+    <p><span class="lead">What ·</span> Fires 12 completely different questions at once. The dots fan
+    out roughly evenly, hollow (fresh work) on each machine.</p>
+    <p><span class="lead">Why ·</span> Nothing is reusable between distinct prompts, so there's no
+    cache to chase — the scheduler's job reduces to keeping every queue short. Here a good round-robin
+    would do about as well; the payoff comes in Beat 2, when work <i>is</i> reusable.</p>
+    <p><span class="lead">How ·</span> Each request carries a random unique prompt; the scheduler
+    scores every machine on queue depth and picks the shortest line.</p>`,
   beat2: `<h4>Beat 2 · Converge</h4>
-    <p>12 questions that all start with the same long instructions (a shared
-    <span class="term" data-term="prefix">prefix</span>, like a system prompt). The scheduler sends
-    them where that work is already remembered — expect them all to land on ONE machine, and the
-    savings counter to climb.</p>`,
-  rag: `<h4>RAG workload</h4>
-    <p>The real shape of a retrieval app: one long document, then thirty different questions about
-    it. After the first question warms the <span class="term" data-term="kv">cache</span>, every
-    other question reuses it — so the reuse counter and the winning machine's payoff bar climb
-    steadily for the length of the run, not just a blip.</p>
-    <p>This is why prefix-cache-aware routing matters at scale: the more a context is reused, the
-    more routing to where it already lives is worth.</p>`,
+    <p><span class="lead">What ·</span> Fires 12 questions that all begin with the same long
+    instructions (a shared <span class="term" data-term="prefix">prefix</span>, like a system prompt).
+    They all land on ONE machine, the dots turn solid, and the savings counter climbs.</p>
+    <p><span class="lead">Why ·</span> The first request makes one machine remember that shared
+    beginning in its <span class="term" data-term="kv">KV cache</span>. Re-reading it there is free, so
+    the prefix scorer (the heaviest weight) keeps sending the rest to the same machine — affinity the
+    scheduler <i>derives</i>, not stickiness you configured.</p>
+    <p><span class="lead">How ·</span> The prefix is a multi-KB block and the requests run one after
+    another, so each scores against a warm cache and an empty queue and affinity wins cleanly.</p>`,
+  rag: `<h4>Bigger · RAG workload</h4>
+    <p><span class="lead">What ·</span> The real shape of a retrieval app: one long document, then 30
+    different questions about it, paced over ~40 seconds.</p>
+    <p><span class="lead">Why ·</span> After the first question warms the
+    <span class="term" data-term="kv">cache</span>, every following question reuses that document
+    instead of recomputing it — so the reuse counters and the winning machine's "work never redone"
+    bar climb <i>steadily</i> for the whole run, not in one blip. The more a context is reused, the
+    more routing to where it already lives is worth.</p>
+    <p><span class="lead">How ·</span> All 30 questions share the document as their prefix and run
+    paced, so they converge on one machine and ride its warm cache.</p>`,
   beat3: `<h4>Beat 3 · Reshape the pool</h4>
-    <p>The pool is a text file — and you can edit it right here. Every machine card has a
-    <b>⏻ drain</b> (take it out of rotation, reversibly) and <b>✕ remove</b>; the dashed tile adds
-    one. The scheduler watches the file and reloads it live, so the picture above reshapes in
-    seconds, no restarts.</p>`,
+    <p><span class="lead">What ·</span> The list of machines is one text file. Each card has a
+    <b>⏻ drain</b> (out of rotation, reversibly) and <b>✕ remove</b>; the dashed tile adds one live.
+    The topology and ready-count reshape within a couple of seconds.</p>
+    <p><span class="lead">Why ·</span> This is the part that normally needs a
+    <span class="term" data-term="kubernetes">Kubernetes</span> control plane and an InferencePool.
+    Here the "cluster state" is a YAML file the scheduler watches — add, drain, or remove capacity by
+    editing it: no operators, no CRDs, no restarts.</p>
+    <p><span class="lead">How ·</span> The controls edit <span class="mono">config/pool.txt</span>; a
+    generated <span class="mono">endpoints.yaml</span> is what the scheduler reads, and it live-reloads
+    that file (<span class="mono">watchFile</span>) so routing follows. Draining just comments a line
+    out — the machine stays in the file but receives no traffic.</p>`,
   beat4: `<h4>Beat 4 · Overflow (KV offloading)</h4>
-    <p>8 big documents are sent to the worker whose fast <span class="term" data-term="kv">KV cache</span>
-    tier has been made deliberately small — they overflow it, and evicted memory spills into an
-    <b>offload buffer</b> instead of being thrown away. Then the same 8 documents are replayed:
-    watch "restored from offload" climb — that work came back as a memory copy, not a recompute.</p>
-    <p>This is vLLM's KV offloading connector (llm-d's "advanced KV-cache management" path). On
-    discrete GPUs the buffer is big host RAM behind small VRAM; tiers can extend to disk. Requires
-    an offload-enabled worker in the pool — the button lights up when one is present.</p>`,
+    <p><span class="lead">What ·</span> A worker's fast <span class="term" data-term="kv">KV-cache</span>
+    tier is deliberately shrunk, then 8 large documents are sent to it. They overflow the tier, and
+    blocks evicted from it spill into a slower, larger <b>offload buffer</b> instead of being
+    discarded. Replaying the same 8 documents brings that work back as "restored from offload" — a
+    memory copy, not a recompute.</p>
+    <p><span class="lead">Why ·</span> On a discrete GPU the fast tier is VRAM: small and expensive.
+    Host RAM is large and cheap. Keeping evicted prefixes in host RAM (or on disk) means a returning
+    prompt reloads in milliseconds instead of being recomputed from scratch — llm-d's "advanced
+    KV-cache management" / tiered-cache path (vLLM's offloading connector; LMCache extends it to disk
+    and remote tiers).</p>
+    <p><span class="lead">How ·</span> Start a CUDA worker with
+    <code>OFFLOAD_GB=16 NUM_GPU_BLOCKS=2048</code> (see <span class="mono">scripts/spark/start-vllm.sh</span>)
+    — that adds the offload buffer and shrinks the fast tier so eviction actually happens on stage.
+    The button lights up once such a worker joins the pool. <b>Unified-memory machines can't show
+    this</b>: on Apple Silicon and the DGX Spark, "GPU" and "CPU" are the same physical RAM, so
+    offloading would copy bytes to themselves — there you right-size the memory fraction instead.</p>`,
   file: `<h4>The cluster is a file</h4>
     <p>This is the entire "cluster state": a plain YAML file listing the machines. The scheduler
     live-reloads it on every change (<span class="mono">watchFile</span>) — what Kubernetes does with

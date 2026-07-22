@@ -149,7 +149,9 @@ h1 {
   position: absolute;
   display: none;
   z-index: 20;
-  max-width: 420px;
+  max-width: 440px;
+  max-height: 70vh;
+  overflow-y: auto;
   background: var(--rh-bg-alt);
   border: 1px solid var(--rh-border);
   border-left: 3px solid var(--rh-red);
@@ -160,6 +162,8 @@ h1 {
   color: var(--rh-text);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
 }
+/* What/Why/How lead-ins so each explainer answers all three at a glance */
+.info-pop p .lead { color: var(--rh-text-strong); font-weight: 700; }
 .info-pop h4 { margin: 0 0 0.4rem; font-family: var(--rh-font-display); font-weight: 600; font-size: 0.95rem; color: var(--rh-text-strong); }
 .info-pop p { margin: 0 0 0.5rem; }
 .info-pop p:last-child { margin-bottom: 0; }
