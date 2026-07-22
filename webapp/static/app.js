@@ -106,12 +106,12 @@ const INFO = {
     is the opposite mistake — to the scheduler an unreachable worker looks perfectly idle, so it
     keeps winning traffic. That's why the pool file skips machines that don't answer.)</p>`,
   rrsplit: `<h4>llm-d vs. blind round-robin</h4>
-    <p><span class="lead">What ·</span> The same recent requests, scored two ways. The top row of the
-    tape is where llm-d actually sent each one; the bottom row is where a cache-blind
-    <span class="term" data-term="roundrobin">round-robin</span> balancer would have sent it. A
-    filled cell landed on a <span class="term" data-term="prefixhit">warm cache</span> (work already
-    remembered); a hollow cell is fresh work. A green-ringed column is one llm-d kept warm that
-    round-robin would have sent cold.</p>
+    <p><span class="lead">What ·</span> The same recent requests, scored two ways. Each bar is all of
+    them: green is the share that landed on a <span class="term" data-term="prefixhit">warm cache</span>
+    (work the machine already had), grey is fresh work recomputed from scratch. The top bar is where
+    llm-d actually sent them; the bottom bar is where a cache-blind
+    <span class="term" data-term="roundrobin">round-robin</span> balancer would have. llm-d's green
+    is longer — that gap is the point.</p>
     <p><span class="lead">Why ·</span> Cache hits are the whole payoff — the measured line shows warm
     requests come back several times faster than cold ones. llm-d chases those hits; round-robin
     can't see them.</p>
@@ -991,10 +991,9 @@ function renderHeadToHead(decisions) {
   if (rows.length < 6) { box.style.display = 'none'; return; }
   box.style.display = '';
 
+  const M = rows.length;
   let llmdWarm = 0, rrWarm = 0, saved = 0, preserved = 0;
   const warm = [], cold = [];
-  const tape = document.getElementById('tape');
-  tape.innerHTML = '';
   for (const d of rows) {
     const lHit = chosenHit(d) ?? 0;
     const rHit = d.signals[d.rr_pick].prefix_hit_pct ?? 0;
@@ -1006,39 +1005,42 @@ function renderHeadToHead(decisions) {
       saved++;
       if (d.prompt_tokens) preserved += d.prompt_tokens * Math.max(0, lHit - rHit) / 100;
     }
-    const chosen = shortName(d.served_by === 'unknown' ? null : d.served_by, lastEndpoints);
-    const lColor = seriesColor.get(chosen) || FALLBACK;
-    const rColor = seriesColor.get(d.rr_pick) || FALLBACK;
-    const col = document.createElement('div');
-    col.className = 'tcol' + (lWarm && !rWarm ? ' win' : '');
-    col.title = `${d.tag}: llm-d → ${chosen} (${Math.round(lHit)}% warm) · ` +
-      `round-robin → ${d.rr_pick} (${Math.round(rHit)}%, est)`;
-    col.innerHTML =
-      `<div class="tcell ${lWarm ? 'warm' : 'cold'}" style="--series:${lColor}"></div>` +
-      `<div class="tcell ${rWarm ? 'warm' : 'cold'}" style="--series:${rColor}"></div>`;
-    tape.appendChild(col);
   }
+  document.getElementById('h2h-n').textContent = M;
+  document.getElementById('h2h-n2').textContent = M;
 
-  const lp = Math.round(100 * llmdWarm / rows.length);
-  const rp = Math.round(100 * rrWarm / rows.length);
-  document.getElementById('h2h-llmd').textContent = lp + '%';
-  document.getElementById('h2h-rr').textContent = rp + '%';
-  const dEl = document.getElementById('h2h-delta'), dCap = document.getElementById('h2h-delta-cap');
-  if (rp === 0 && lp > 0) { dEl.textContent = 'warm'; dCap.textContent = 'vs none'; }
-  else if (lp > rp) { dEl.textContent = (lp / Math.max(1, rp)).toFixed(1) + '×'; dCap.textContent = 'more served warm'; }
-  else { dEl.textContent = '≈'; dCap.textContent = 'even so far'; }
+  // two same-scale bars: full track = M requests, warm (green) left, cold (grey) right
+  const setBar = (pfx, warmN) => {
+    document.getElementById(`bar-${pfx}-warm`).style.width = (100 * warmN / M) + '%';
+    document.getElementById(`bar-${pfx}-cold`).style.width = (100 * (M - warmN) / M) + '%';
+    const lw = document.getElementById(`lab-${pfx}-warm`), lc = document.getElementById(`lab-${pfx}-cold`);
+    lw.textContent = warmN; lw.style.display = warmN ? '' : 'none';
+    lc.textContent = M - warmN; lc.style.display = (M - warmN) ? '' : 'none';
+  };
+  setBar('llmd', llmdWarm);
+  setBar('rr', rrWarm);
+
+  // the "save": requests llm-d kept warm that round-robin would have run cold
+  const hero = document.getElementById('h2h-save-hero');
+  if (saved > 0) {
+    hero.innerHTML = `llm-d served <b id="save-n">${saved}</b> of these <b>${M}</b> from a warm cache that ` +
+      `blind round-robin would have recomputed cold <span class="tag-e">est</span>`;
+  } else if (llmdWarm > rrWarm) {
+    hero.innerHTML = `llm-d landed <b>${llmdWarm}</b> of ${M} on a warm cache — round-robin, <b>${rrWarm}</b> <span class="tag-e">est</span>`;
+  } else {
+    hero.innerHTML = `Even so far — both routers landing warm on this request mix`;
+  }
 
   // measured latency payoff — both sides are the REAL llm-d path split by warmth
   const wMed = median(warm), cMed = median(cold);
   const bits = [];
   if (wMed != null && cMed != null && warm.length >= 3 && cold.length >= 3 && cMed > wMed) {
-    bits.push(`served warm in <b>${(wMed / 1000).toFixed(1)}s</b> vs <b>${(cMed / 1000).toFixed(1)}s</b> cold — ` +
+    bits.push(`warm requests came back in <b>${(wMed / 1000).toFixed(1)}s</b> vs <b>${(cMed / 1000).toFixed(1)}s</b> cold — ` +
       `<b>${(cMed / wMed).toFixed(1)}× faster</b> <span class="tag-m">measured</span>`);
   }
   if (saved > 0 && preserved > 0) {
     const pd = preserved * (PRICE_FRESH_PER_M - PRICE_CACHED_PER_M) / 1e6;
-    bits.push(`routing dodged a cold start on <b>${saved}</b> of ${rows.length} — ` +
-      `~${fmtTokens(Math.round(preserved))} tokens (≈${fmtDollars(pd)}) not recomputed <span class="tag-e">est</span>`);
+    bits.push(`~${fmtTokens(Math.round(preserved))} tokens (≈${fmtDollars(pd)}) not recomputed <span class="tag-e">est</span>`);
   }
   document.getElementById('h2h-latency').innerHTML = bits.join('<span class="latsep">·</span>');
 }

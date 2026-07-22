@@ -476,41 +476,39 @@ pre.pool-file.changed { animation: file-flash 1.2s ease-out 1; }
 
 /* ===== Head-to-head: llm-d vs blind round-robin ===== */
 .h2h { margin-bottom: 1.1rem; }
-.h2h-head { font-size: 0.85rem; color: var(--rh-text); margin-bottom: 0.6rem; }
-.h2h-score { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 0.6rem;
-  padding: 0.8rem 1rem; background: var(--rh-bg-alt); border: 1px solid var(--rh-border); border-radius: 6px; }
-.h2h-side { text-align: center; }
-.h2h-tag { font-size: 0.75rem; color: var(--rh-text-sub); display: inline-flex; align-items: center; gap: 0.4rem; justify-content: center; flex-wrap: wrap; }
-.h2h-tag .chip { width: 10px; height: 10px; border-radius: 3px; }
-.h2h-pct { font-family: var(--rh-font-display); font-weight: 700; font-size: 2.6rem; line-height: 1.05; color: var(--status-good); }
-.h2h-pct.rr { color: var(--rh-text-sub); }
-.h2h-cap { font-size: 0.72rem; color: var(--rh-text-sub); }
-.h2h-versus { padding: 0 0.3rem; }
-.h2h-delta { font-family: var(--rh-font-display); font-weight: 700; font-size: 1.5rem; color: var(--rh-text-strong); }
-.h2h-delta-cap { font-size: 0.64rem; color: var(--rh-text-sub); max-width: 9ch; margin: 0 auto; line-height: 1.2; }
+.h2h-head { font-size: 0.85rem; color: var(--rh-text); margin-bottom: 0.5rem; }
 .tag-m, .tag-e { font-family: var(--rh-font-mono); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em; border: 1px solid var(--rh-border); border-radius: 2px; padding: 0.02em 0.32em; margin-left: 0.15rem; }
 .tag-m { color: var(--status-good); border-color: rgba(110,192,110,0.4); }
 .tag-e { color: var(--rh-text-sub); }
 
-.tape-wrap { display: grid; grid-template-columns: auto 1fr; gap: 0.5rem 0.6rem; align-items: center; margin-top: 0.7rem; }
-.tape-rowlabels { display: grid; grid-template-rows: 16px 16px; gap: 4px; font-size: 0.66rem; color: var(--rh-text-sub); text-align: right; }
-.tape { display: flex; gap: 2px; overflow: hidden; }
-.tcol { flex: 1; min-width: 4px; max-width: 13px; display: grid; grid-template-rows: 16px 16px; gap: 4px; }
-.tcell { border-radius: 2px; transition: background 0.3s; }
-.tcell.warm { background: var(--series); }
-.tcell.cold { background: transparent; box-shadow: inset 0 0 0 1.5px var(--series); opacity: 0.45; }
-.tcol.win .tcell:first-child { box-shadow: 0 0 0 1px var(--status-good), 0 0 6px rgba(110,192,110,0.55); }
-.tape-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.9rem; font-size: 0.68rem; color: var(--rh-text-sub); margin-top: 0.55rem; }
-.tape-legend .lg { display: inline-flex; align-items: center; gap: 0.35rem; }
-.tape-legend .sw { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
-.tape-legend .sw.warm { background: var(--rh-text-sub); }
-.tape-legend .sw.cold { background: transparent; box-shadow: inset 0 0 0 1.5px var(--rh-text-sub); }
-.tape-legend .sw.save { background: transparent; box-shadow: 0 0 0 1px var(--status-good), 0 0 5px rgba(110,192,110,0.6); }
-.tape-legend .tape-oldnew { margin-left: auto; }
-.h2h-latency { font-size: 0.8rem; color: var(--rh-text-sub); margin-top: 0.7rem; text-align: center; }
-.h2h-latency b { color: var(--rh-text-strong); font-family: var(--rh-font-display); }
-.h2h-latency .latsep { margin: 0 0.5rem; opacity: 0.4; }
-.h2h-latency:empty { display: none; }
+/* two same-scale bars: warm (green) vs cold (grey), one per router — compare
+   two green lengths; counts pinned on the segments */
+.h2h-bars { padding: 0.9rem 1rem; background: var(--rh-bg-alt); border: 1px solid var(--rh-border); border-radius: 6px; }
+.h2h-row { display: grid; grid-template-columns: 175px 1fr; align-items: center; gap: 0.7rem; margin: 0.45rem 0; }
+.h2h-rlabel { font-size: 0.78rem; color: var(--rh-text-sub); display: inline-flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.h2h-rlabel .chip { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.h2h-track { position: relative; display: flex; height: 30px; background: var(--rh-bg); border: 1px solid var(--rh-border); border-radius: 5px; overflow: hidden; }
+.h2h-warm { height: 100%; background: var(--status-good); transition: width 0.55s ease; min-width: 0; }
+.h2h-cold { height: 100%; transition: width 0.55s ease; min-width: 0;
+  background: repeating-linear-gradient(-45deg, rgba(184,184,184,0.10) 0 6px, rgba(184,184,184,0.20) 6px 12px); }
+.seglab { position: absolute; top: 50%; transform: translateY(-50%); font-family: var(--rh-font-display); font-weight: 700; font-size: 0.95rem; pointer-events: none; }
+.seglab.warm { left: 0.6rem; color: #0D0618; }
+.seglab.cold { right: 0.6rem; color: var(--rh-text-sub); }
+.h2h-scale { display: flex; flex-wrap: wrap; align-items: center; gap: 0.9rem; font-size: 0.68rem; color: var(--rh-text-sub); margin-top: 0.6rem; }
+.h2h-scale .lg { display: inline-flex; align-items: center; gap: 0.35rem; }
+.h2h-scale .sw { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.h2h-scale .sw.warm { background: var(--status-good); }
+.h2h-scale .sw.cold { background: repeating-linear-gradient(-45deg, rgba(184,184,184,0.15) 0 4px, rgba(184,184,184,0.30) 4px 8px); }
+.h2h-scale .h2h-scale-end { margin-left: auto; }
+
+.h2h-save { margin-top: 0.85rem; padding: 0.8rem 1rem; background: var(--rh-bg-alt); border: 1px solid var(--rh-border); border-left: 3px solid var(--status-good); border-radius: 6px; }
+.h2h-save-hero { font-size: 0.98rem; line-height: 1.5; color: var(--rh-text); }
+.h2h-save-hero b { font-family: var(--rh-font-display); font-weight: 700; color: var(--rh-text-strong); }
+.h2h-save-hero b#save-n { font-size: 1.9rem; color: var(--status-good); vertical-align: -0.14em; margin-right: 0.05em; }
+.h2h-save-support { font-size: 0.8rem; color: var(--rh-text-sub); margin-top: 0.5rem; }
+.h2h-save-support b { color: var(--rh-text-strong); font-family: var(--rh-font-display); }
+.h2h-save-support .latsep { margin: 0 0.5rem; opacity: 0.4; }
+.h2h-save-support:empty { display: none; }
 
 .rr-ghost { font-size: 0.68rem; color: var(--rh-text-sub); font-weight: 400; margin-left: 0.45rem; font-family: var(--rh-font-mono); }
 

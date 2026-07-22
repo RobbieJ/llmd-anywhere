@@ -98,31 +98,32 @@
         <h3>Routing decisions<button class="info-btn" data-info="decisions">i</button></h3>
 
         <div class="h2h" id="h2h" style="display:none">
-          <div class="h2h-head">Same requests, two routers — who landed on a <span class="term" data-term="prefixhit">warm cache</span>?<button class="info-btn" data-info="rrsplit">i</button></div>
-          <div class="h2h-score">
-            <div class="h2h-side">
-              <div class="h2h-tag"><span class="chip" style="background:var(--status-good)"></span>llm-d routing</div>
-              <div class="h2h-pct num" id="h2h-llmd">–</div>
-              <div class="h2h-cap">landed warm <span class="tag-m">measured</span></div>
+          <div class="h2h-head">Same <span id="h2h-n">40</span> requests, two routers — who landed on a <span class="term" data-term="prefixhit">warm cache</span>?<button class="info-btn" data-info="rrsplit">i</button></div>
+          <div class="h2h-bars">
+            <div class="h2h-row">
+              <div class="h2h-rlabel"><span class="chip" style="background:var(--status-good)"></span>llm-d routing <span class="tag-m">measured</span></div>
+              <div class="h2h-track">
+                <div class="h2h-warm" id="bar-llmd-warm"></div><div class="h2h-cold" id="bar-llmd-cold"></div>
+                <span class="seglab warm" id="lab-llmd-warm"></span><span class="seglab cold" id="lab-llmd-cold"></span>
+              </div>
             </div>
-            <div class="h2h-versus"><div class="h2h-delta num" id="h2h-delta"></div><div class="h2h-delta-cap" id="h2h-delta-cap"></div></div>
-            <div class="h2h-side">
-              <div class="h2h-tag"><span class="chip" style="background:var(--rh-text-sub)"></span>round-robin <span class="term" data-term="roundrobin">(blind)</span></div>
-              <div class="h2h-pct rr num" id="h2h-rr">–</div>
-              <div class="h2h-cap">would have <span class="tag-e">est</span></div>
+            <div class="h2h-row">
+              <div class="h2h-rlabel"><span class="chip" style="background:var(--rh-text-sub)"></span>round-robin <span class="term" data-term="roundrobin">(blind)</span> <span class="tag-e">est</span></div>
+              <div class="h2h-track">
+                <div class="h2h-warm" id="bar-rr-warm"></div><div class="h2h-cold" id="bar-rr-cold"></div>
+                <span class="seglab warm" id="lab-rr-warm"></span><span class="seglab cold" id="lab-rr-cold"></span>
+              </div>
+            </div>
+            <div class="h2h-scale">
+              <span class="lg"><span class="sw warm"></span>warm — already cached, near-instant</span>
+              <span class="lg"><span class="sw cold"></span>fresh — recomputed from scratch</span>
+              <span class="h2h-scale-end">each bar = all <span id="h2h-n2">40</span> comparable requests</span>
             </div>
           </div>
-          <div class="tape-wrap">
-            <div class="tape-rowlabels"><span>llm-d</span><span>round-robin</span></div>
-            <div class="tape" id="tape"></div>
+          <div class="h2h-save">
+            <div class="h2h-save-hero" id="h2h-save-hero"></div>
+            <div class="h2h-save-support num" id="h2h-latency"></div>
           </div>
-          <div class="tape-legend">
-            <span class="lg"><span class="sw warm"></span>warm — machine already had it</span>
-            <span class="lg"><span class="sw cold"></span>fresh — first time here</span>
-            <span class="lg"><span class="sw save"></span>routing dodged a cold start</span>
-            <span class="tape-oldnew">one column per request · oldest → newest</span>
-          </div>
-          <div class="h2h-latency num" id="h2h-latency"></div>
         </div>
 
         <div class="scoreboard" id="scoreboard"></div>
