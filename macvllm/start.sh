@@ -60,7 +60,10 @@ echo ">>> Starting Metal vLLM ($MODEL as '$SERVED_NAME') on :$PORT (memory fract
 offload_args=()
 [[ -n "$OFFLOAD_GB" ]] && offload_args=(--kv-offloading-backend native --kv-offloading-size "$OFFLOAD_GB")
 
+# vllm-metal 0.30+ reads --gpu-memory-utilization (default 0.9) and ignores
+# VLLM_METAL_MEMORY_FRACTION; older releases read only the env var. Pass both.
 nohup env VLLM_METAL_MEMORY_FRACTION="$FRACTION" "$VENV/bin/vllm" serve "$MODEL" \
+  --gpu-memory-utilization "$FRACTION" \
   --served-model-name "$SERVED_NAME" \
   --host 0.0.0.0 \
   --port "$PORT" \
